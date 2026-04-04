@@ -1,0 +1,7 @@
+{
+  "database": "dolt",
+  "backend": "dolt",
+  "dolt_mode": "embedded",
+  "dolt_database": "hoptitrade",
+  "project_id": "eed19009-425b-48ee-ad6d-a21d813d6c5b"
+}
