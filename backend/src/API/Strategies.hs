@@ -13,7 +13,7 @@ module API.Strategies
 
 import Control.Monad (forM, forM_)
 import Control.Monad.IO.Class (liftIO)
-import Data.Aeson (FromJSON (..), ToJSON (..), Options (..), genericToJSON, genericParseJSON, defaultOptions)
+import Data.Aeson (FromJSON (..), ToJSON (..), Options (..), genericToJSON, genericParseJSON, defaultOptions, object, (.=))
 import Data.List (sortBy, groupBy, sortOn, minimumBy, maximumBy, partition)
 import Data.Maybe (fromMaybe, catMaybes, mapMaybe, maybeToList)
 import Data.Ord (comparing, Down (..))
@@ -112,12 +112,27 @@ data StrategyResponse = StrategyResponse
   , strategyExpiration :: Maybe Expiration  -- Added: option expiration date
   , strategyDaysToExpiry :: Maybe Int       -- Added: days until expiration
   } deriving stock (Eq, Show, Generic)
+    deriving anyclass FromJSON
 
+-- Custom ToJSON instance to handle Expiration serialization
 instance ToJSON StrategyResponse where
-  toJSON = genericToJSON defaultOptions
-
-instance FromJSON StrategyResponse where
-  parseJSON = genericParseJSON defaultOptions
+  toJSON s = object
+    [ "strategyId" .= strategyId s
+    , "strategyType" .= strategyType s
+    , "strategyName" .= strategyName s
+    , "strategyDescription" .= strategyDescription s
+    , "strategyUnderlying" .= strategyUnderlying s
+    , "strategyGreeks" .= strategyGreeks s
+    , "strategyMetrics" .= strategyMetrics s
+    , "strategyNetPremium" .= strategyNetPremium s
+    , "strategyMarginRequired" .= strategyMarginRequired s
+    , "strategyAdvice" .= strategyAdvice s
+    , "strategyStatus" .= strategyStatus s
+    , "strategyQualityScore" .= strategyQualityScore s
+    , "strategyRiskRank" .= strategyRiskRank s
+    , "strategyExpiration" .= (formatExpiration <$> strategyExpiration s)
+    , "strategyDaysToExpiry" .= strategyDaysToExpiry s
+    ]
 
 -- ============================================================================
 -- Server

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Strategy } from '@/domain/types';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
@@ -10,11 +10,17 @@ interface StrategyCardProps {
   strategy: Strategy;
   onOpen: () => void;
   isOpening: boolean;
+  forceShowDetails?: boolean;
 }
 
-export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps) {
+export function StrategyCard({ strategy, onOpen, isOpening, forceShowDetails = false }: StrategyCardProps) {
   const { strategyAdvice, strategyMetrics, strategyGreeks, strategyNetPremium } = strategy;
   const [showDetails, setShowDetails] = useState(false);
+
+  // Sync with global toggle
+  useEffect(() => {
+    setShowDetails(forceShowDetails);
+  }, [forceShowDetails]);
 
   const formatCurrency = (value: number | null) => {
     if (value === null) return 'N/A';
@@ -30,8 +36,13 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
   };
 
   const getExpirationText = () => {
-    if (!strategy.strategyExpiresAt) return 'N/A';
-    const expDate = new Date(strategy.strategyExpiresAt);
+    // Try multiple possible field names
+    const expDateStr = strategy.strategyExpiration || strategy.strategyExpiresAt;
+    if (!expDateStr) return null;
+    
+    const expDate = new Date(expDateStr);
+    if (isNaN(expDate.getTime())) return null;
+    
     const now = new Date();
     const daysToExp = Math.ceil((expDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     
@@ -67,6 +78,8 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
     }
     return 'At expiration: Position closes at intrinsic value.';
   };
+
+  const expirationText = getExpirationText();
 
   return (
     <Card className="flex flex-col">
@@ -140,16 +153,6 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
           </div>
         </div>
 
-        {/* Expiration Info */}
-        <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <Calendar className="h-4 w-4 text-blue-600" />
-            <span className="font-medium text-blue-900">Expiration</span>
-          </div>
-          <p className="text-sm text-blue-800 mb-1">{getExpirationText()}</p>
-          <p className="text-xs text-blue-600">{getExpirationOutcome()}</p>
-        </div>
-
         {/* Greeks */}
         <div className="grid grid-cols-4 gap-2 text-center">
           <div className="rounded bg-secondary p-2">
@@ -181,8 +184,20 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
           </button>
           
           {showDetails && (
-            <div className="mt-3 space-y-2 text-sm">
+            <div className="mt-3 space-y-3 text-sm">
               <Separator />
+              
+              {/* Expiration Info - moved to details section */}
+              {expirationText && (
+                <div className="rounded-lg bg-blue-50 border border-blue-200 p-3">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Calendar className="h-4 w-4 text-blue-600" />
+                    <span className="font-medium text-blue-900">Expiration</span>
+                  </div>
+                  <p className="text-sm text-blue-800 mb-1">{expirationText}</p>
+                  <p className="text-xs text-blue-600">{getExpirationOutcome()}</p>
+                </div>
+              )}
               
               {/* Breakeven Points */}
               {strategyMetrics.metricsBreakEvenPoints.length > 0 && (
@@ -227,6 +242,14 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
                   <span className="font-medium">
                     1:{(strategyMetrics.metricsMaxProfit / strategyMetrics.metricsMaxLoss).toFixed(2)}
                   </span>
+                </div>
+              )}
+              
+              {/* Quality Score */}
+              {strategy.strategyQualityScore !== undefined && (
+                <div className="flex justify-between">
+                  <span className="text-muted-foreground">Quality Score</span>
+                  <span className="font-medium">{strategy.strategyQualityScore.toFixed(0)}/100</span>
                 </div>
               )}
             </div>

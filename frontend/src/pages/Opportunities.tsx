@@ -1,14 +1,18 @@
+import { useState } from 'react';
 import { useStrategies, useOpenOrder } from '@/api';
 import { StrategyCard } from '@/components/StrategyCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { useAppStore } from '@/stores';
 import { TradingMode } from '@/domain/types';
+import { ChevronDown, ChevronUp } from 'lucide-react';
 
 export function OpportunitiesPage() {
   const { mode } = useAppStore();
   const { data: strategies = [], isLoading, error } = useStrategies(mode);
   const openOrder = useOpenOrder();
+  const [showAllDetails, setShowAllDetails] = useState(false);
 
   const handleOpenPosition = async (strategyId: string) => {
     // TODO: Implement order opening with strategy details
@@ -45,7 +49,27 @@ export function OpportunitiesPage() {
             Discover options strategies based on market conditions
           </p>
         </div>
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center space-x-4">
+          {strategies.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => setShowAllDetails(!showAllDetails)}
+              className="flex items-center gap-1"
+            >
+              {showAllDetails ? (
+                <>
+                  <ChevronUp className="h-4 w-4" />
+                  Hide All Details
+                </>
+              ) : (
+                <>
+                  <ChevronDown className="h-4 w-4" />
+                  Show All Details
+                </>
+              )}
+            </Button>
+          )}
           <Badge variant={mode === TradingMode.Auto ? 'default' : 'secondary'}>
             {mode === TradingMode.Auto ? 'Auto Mode' : 'Manual Mode'}
           </Badge>
@@ -71,6 +95,7 @@ export function OpportunitiesPage() {
               strategy={strategy}
               onOpen={() => handleOpenPosition(strategy.strategyId)}
               isOpening={openOrder.isPending}
+              forceShowDetails={showAllDetails}
             />
           ))}
         </div>
