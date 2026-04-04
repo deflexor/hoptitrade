@@ -3,3 +3,9 @@
 .dolt/
 *.db
 .beads-credential-key
+.tmp/
+frontend/node_modules/
+frontend/dist/
+backend/.hie/
+backend/dist-newstyle/
+
