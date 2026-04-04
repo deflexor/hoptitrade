@@ -107,6 +107,7 @@ executable hoptitrade
         API.Settings
         API.Strategies
         Domain.Greeks
+        Domain.Greeks.Calculator
         Domain.Option
         Domain.Order
         Domain.Position

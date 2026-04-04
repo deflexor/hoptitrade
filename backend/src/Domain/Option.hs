@@ -6,6 +6,7 @@ module Domain.Option
   , OptionChain (..)
   , Strike (..)
   , Expiration (..)
+  , OptionType (..)
   , isCall
   , isPut
   , optionMoneyness

@@ -66,7 +66,8 @@ data OKXResponse a = OKXResponse
   { okxCode :: Text
   , okxMsg :: Text
   , okxData :: [a]
-  } deriving stock (Eq, Show, Generic, FromJSON)
+  } deriving stock (Eq, Show, Generic)
+    deriving anyclass FromJSON
 
 data OKXInstrument = OKXInstrument
   { instId :: Text
@@ -138,10 +139,10 @@ fetchOptionInstruments config underlying = do
   let url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/instruments?instType=OPTION&uly=" <> underlying
   request <- parseRequest url
   
-  result <- try $ httpLbs request manager
+  result <- try @SomeException $ httpLbs request manager
   
   case result of
-    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show e)
+    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show (e :: SomeException))
     Right response -> do
       case statusCode $ responseStatus response of
         200 -> do
@@ -161,10 +162,10 @@ fetchOptionChain config instruments = do
       url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/tickers?instType=OPTION&instId=" <> instIdList
   
   request <- parseRequest url
-  result <- try $ httpLbs request manager
+  result <- try @SomeException $ httpLbs request manager
   
   case result of
-    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show e)
+    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show (e :: SomeException))
     Right response -> do
       case statusCode $ responseStatus response of
         200 -> do
@@ -180,13 +181,13 @@ fetchOptionChain config instruments = do
 fetchUnderlyingPrice :: OKXClientConfig -> Text -> IO (Either OKXError Scientific)
 fetchUnderlyingPrice config underlying = do
   manager <- newManager tlsManagerSettings
-  let url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/index-tickers?instId=" <> Text.unpack underlying
+  let url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/index-tickers?instId=" <> underlying
   
   request <- parseRequest url
-  result <- try $ httpLbs request manager
+  result <- try @SomeException $ httpLbs request manager
   
   case result of
-    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show e)
+    Left e -> return $ Left $ OKXNetworkError (Text.pack $ show (e :: SomeException))
     Right response -> do
       case statusCode $ responseStatus response of
         200 -> do
