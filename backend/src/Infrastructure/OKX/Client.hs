@@ -67,7 +67,12 @@ data OKXResponse a = OKXResponse
   , okxMsg :: Text
   , okxData :: [a]
   } deriving stock (Eq, Show, Generic)
-    deriving anyclass FromJSON
+
+instance FromJSON a => FromJSON (OKXResponse a) where
+  parseJSON = withObject "OKXResponse" $ \v -> OKXResponse
+    <$> v .: "code"
+    <*> v .: "msg"
+    <*> v .: "data"
 
 data OKXInstrument = OKXInstrument
   { instId :: Text

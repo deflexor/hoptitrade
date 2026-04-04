@@ -41,13 +41,28 @@ export function StrategyCard({ strategy, onOpen, isOpening }: StrategyCardProps)
     return `${daysToExp} days (${expDate.toLocaleDateString()})`;
   };
 
-  const getExpirationOutcome = () => {
+  const getStrategyTypeString = (): string => {
     const type = strategy.strategyType;
-    if (type.includes('IronCondor') || type.includes('Condor')) {
+    if (typeof type === 'string') {
+      return type;
+    }
+    // Handle object type from Haskell backend
+    if (type && typeof type === 'object') {
+      if (type.tag === 'VerticalSpread' && type.contents) {
+        return `${type.contents}Spread`;
+      }
+      return type.tag;
+    }
+    return '';
+  };
+
+  const getExpirationOutcome = () => {
+    const typeStr = getStrategyTypeString();
+    if (typeStr.includes('IronCondor') || typeStr.includes('Condor')) {
       return 'At expiration: Profit if price stays between breakevens. Max profit if between short strikes.';
-    } else if (type.includes('Spread')) {
+    } else if (typeStr.includes('Spread')) {
       return 'At expiration: Profit if directional bet is correct. Max profit at short strike.';
-    } else if (type.includes('Straddle') || type.includes('Strangle')) {
+    } else if (typeStr.includes('Straddle') || typeStr.includes('Strangle')) {
       return 'At expiration: Profit if price moved beyond breakevens. Needs volatility expansion.';
     }
     return 'At expiration: Position closes at intrinsic value.';

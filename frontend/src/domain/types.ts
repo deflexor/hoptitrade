@@ -81,9 +81,14 @@ export interface OptionLeg {
   entryPrice: number | null;
 }
 
+export interface StrategyType {
+  tag: string;
+  contents?: string;
+}
+
 export interface Strategy {
   strategyId: StrategyId;
-  strategyType: string;
+  strategyType: StrategyType | string;  // Can be object from backend or string
   strategyName: string;
   strategyDescription: string;
   strategyUnderlying: string;
