@@ -129,6 +129,16 @@ instance FromJSON OKXIndexTicker where
   parseJSON = withObject "OKXIndexTicker" $ \v -> OKXIndexTicker
     <$> v .: "idxPx"
 
+data OKXMarkPrice = OKXMarkPrice
+  { markPx :: Text
+  , markInstId :: Text
+  } deriving stock (Eq, Show, Generic)
+
+instance FromJSON OKXMarkPrice where
+  parseJSON = withObject "OKXMarkPrice" $ \v -> OKXMarkPrice
+    <$> v .: "markPx"
+    <*> v .: "instId"
+
 -- ============================================================================
 -- API Functions
 -- ============================================================================
@@ -181,7 +191,11 @@ fetchOptionChain config instruments = do
 fetchUnderlyingPrice :: OKXClientConfig -> Text -> IO (Either OKXError Scientific)
 fetchUnderlyingPrice config underlying = do
   manager <- newManager tlsManagerSettings
-  let url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/index-tickers?instId=" <> underlying
+  -- Use the spot ticker for the underlying pair (e.g., BTC-USDT or BTC-USD)
+  let spotInstId = if "USD" `Text.isSuffixOf` underlying && not ("USDT" `Text.isSuffixOf` underlying)
+                   then underlying <> "-SWAP"  -- Use perpetual for USD pairs
+                   else underlying
+      url = Text.unpack $ okxBaseUrl config <> "/api/v5/public/mark-price?instType=SWAP&instId=" <> spotInstId
   
   request <- parseRequest url
   result <- try @SomeException $ httpLbs request manager
@@ -197,8 +211,8 @@ fetchUnderlyingPrice config underlying = do
             Right (OKXResponse {..}) -> 
               if okxCode == "0"
                 then case listToMaybe okxData of
-                  Just (OKXIndexTicker {..}) -> 
-                    case parseScientific idxPx of
+                  Just (OKXMarkPrice {..}) -> 
+                    case parseScientific markPx of
                       Just px -> return $ Right px
                       Nothing -> return $ Left $ OKXParseError "Invalid price format"
                   Nothing -> return $ Left $ OKXParseError "Empty price data"
