@@ -109,6 +109,8 @@ data StrategyResponse = StrategyResponse
   , strategyStatus :: StrategyStatus
   , strategyQualityScore :: Scientific  -- Added: overall quality 0-100
   , strategyRiskRank :: Int             -- Added: rank within risk category
+  , strategyExpiration :: Maybe Expiration  -- Added: option expiration date
+  , strategyDaysToExpiry :: Maybe Int       -- Added: days until expiration
   } deriving stock (Eq, Show, Generic)
 
 instance ToJSON StrategyResponse where
@@ -466,6 +468,8 @@ generateIronCondors now spotPrice filters calls puts =
         , strategyStatus = StrategyActive
         , strategyQualityScore = 0  -- Will be calculated
         , strategyRiskRank = 0      -- Will be assigned
+        , strategyExpiration = Just (contractExpiration shortCall)
+        , strategyDaysToExpiry = Just (calculateDays now (contractExpiration shortCall))
         }
 
 generateSpreads :: UTCTime -> Scientific -> StrategyFilters -> [OptionContract] -> [OptionContract] -> [StrategyResponse]
@@ -511,6 +515,8 @@ generateBullCallSpreads now spotPrice filters calls =
         , strategyStatus = StrategyActive
         , strategyQualityScore = 0
         , strategyRiskRank = 0
+        , strategyExpiration = Just (contractExpiration long)
+        , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
         }
 
 generateBearPutSpreads :: UTCTime -> Scientific -> StrategyFilters -> [OptionContract] -> [StrategyResponse]
@@ -550,6 +556,8 @@ generateBearPutSpreads now spotPrice filters puts =
         , strategyStatus = StrategyActive
         , strategyQualityScore = 0
         , strategyRiskRank = 0
+        , strategyExpiration = Just (contractExpiration long)
+        , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
         }
 
 generateStraddles :: UTCTime -> Scientific -> StrategyFilters -> Maybe OptionContract -> Maybe OptionContract -> [StrategyResponse]
@@ -584,6 +592,8 @@ generateStraddles now spotPrice filters (Just atmCall) (Just atmPut) =
       , strategyStatus = StrategyActive
       , strategyQualityScore = 0
       , strategyRiskRank = 0
+      , strategyExpiration = Just (contractExpiration atmCall)
+      , strategyDaysToExpiry = Just (calculateDays now (contractExpiration atmCall))
       }]
 generateStraddles _ _ _ _ _ = []
 
@@ -602,6 +612,11 @@ combineGreeks contracts = Greeks
 
 formatExpiration :: Expiration -> Text
 formatExpiration (Expiration t) = Text.pack $ show t
+
+-- Calculate days between current time and expiration
+calculateDays :: UTCTime -> Expiration -> Int
+calculateDays now (Expiration expiry) = 
+  max 0 $ round $ realToFrac (diffUTCTime expiry now) / nominalDay
 
 parseScientific :: Text -> Maybe Scientific
 parseScientific txt = 
@@ -656,6 +671,8 @@ mockIronCondor now idx = StrategyResponse
   , strategyStatus = StrategyActive
   , strategyQualityScore = 75.0
   , strategyRiskRank = 1
+  , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
+  , strategyDaysToExpiry = Just 30
   }
 
 mockBullCallSpread :: UTCTime -> Int -> StrategyResponse
@@ -687,6 +704,8 @@ mockBullCallSpread now idx = StrategyResponse
   , strategyStatus = StrategyActive
   , strategyQualityScore = 65.0
   , strategyRiskRank = 2
+  , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
+  , strategyDaysToExpiry = Just 30
   }
 
 mockBearPutSpread :: UTCTime -> Int -> StrategyResponse
@@ -718,6 +737,8 @@ mockBearPutSpread now idx = StrategyResponse
   , strategyStatus = StrategyActive
   , strategyQualityScore = 55.0
   , strategyRiskRank = 3
+  , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
+  , strategyDaysToExpiry = Just 30
   }
 
 mockStraddle :: UTCTime -> Int -> StrategyResponse
@@ -749,4 +770,6 @@ mockStraddle now idx = StrategyResponse
   , strategyStatus = StrategyActive
   , strategyQualityScore = 40.0
   , strategyRiskRank = 4
+  , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
+  , strategyDaysToExpiry = Just 30
   }

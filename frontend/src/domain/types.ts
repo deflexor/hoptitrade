@@ -96,6 +96,10 @@ export interface Strategy {
   strategyStatus: string;
   strategyCreatedAt: string;
   strategyExpiresAt: string;
+  strategyExpiration?: string;  // ISO 8601 expiration date
+  strategyDaysToExpiry?: number;  // Days until expiration
+  strategyQualityScore?: number;  // Quality score 0-100
+  strategyRiskRank?: number;  // Rank within risk category
 }
 
 export interface PositionLeg {
