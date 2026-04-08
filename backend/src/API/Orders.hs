@@ -10,10 +10,12 @@ import Data.Aeson (FromJSON, ToJSON)
 import Data.Scientific (Scientific)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Domain.Broker (BrokerConfig (..), BrokerMode (..), LiquidityAssessment (..), SlippageEstimate (..), defaultLiquidityThreshold)
+import Domain.Broker (BrokerConfig (..), BrokerMode (..), LiquidityAssessment (..), SlippageEstimate (..), isMarketOpen)
 import Domain.Order (CancelRequest (..), OrderRequest (..), OrderResponse (..), OrderType (..))
 import Domain.Settings (settingsToBrokerConfig)
 import Domain.Types (InstrumentId (..), OrderId (..), PositionId (..), Quantity, Side (..), UserId (..))
+import Domain.User (AuthToken (..))
+import Effects.Auth (AuthEffect, extractBearerToken, verifyToken)
 import Effects.Broker
 import Effects.Position
 import Effects.Settings
@@ -26,8 +28,8 @@ import Servant
 -- ============================================================================
 
 type OrdersAPI =
-  "orders" :> "open" :> ReqBody '[JSON] OpenOrderRequest :> Post '[JSON] OpenOrderResponse
-  :<|> "orders" :> "cancel" :> ReqBody '[JSON] CancelOrderRequest :> Post '[JSON] CancelOrderResponse
+  "orders" :> "open" :> Header "Authorization" Text :> ReqBody '[JSON] OpenOrderRequest :> Post '[JSON] OpenOrderResponse
+  :<|> "orders" :> "cancel" :> Header "Authorization" Text :> ReqBody '[JSON] CancelOrderRequest :> Post '[JSON] CancelOrderResponse
 
 -- ============================================================================
 -- Request/Response Types
@@ -70,130 +72,167 @@ data CancelOrderResponse = CancelOrderResponse
 -- Server
 -- ============================================================================
 
-ordersServer :: Members '[BrokerEffect, PositionEffect, SettingsEffect, Embed IO] r
-             => ServerT OrdersAPI (Sem r)
+ordersServer :: Members '[AuthEffect, BrokerEffect, PositionEffect, SettingsEffect, Embed IO] r
+              => ServerT OrdersAPI (Sem r)
 ordersServer = openOrderHandler :<|> cancelOrderHandler
   where
-    -- Helper to get current user ID (placeholder until auth is implemented)
-    getCurrentUserId :: UserId
-    getCurrentUserId = UserId $ read "550e8400-e29b-41d4-a716-446655440000"
+    -- Resolve user from Authorization header
+    resolveUser :: Member AuthEffect r => Maybe Text -> Sem r (Either Text UserId)
+    resolveUser mAuthHeader = case mAuthHeader >>= extractBearerToken of
+      Nothing -> pure $ Left "Missing or invalid Authorization header"
+      Just token -> do
+        mUid <- verifyToken (AuthToken token)
+        pure $ maybe (Left "Invalid or expired token") Right mUid
 
     -- Helper to get broker config from settings
-    getBrokerConfig :: Member SettingsEffect r => Sem r (Maybe BrokerConfig)
-    getBrokerConfig = do
-      let uid = getCurrentUserId
+    getBrokerConfig :: Members '[AuthEffect, SettingsEffect] r => UserId -> Sem r (Maybe BrokerConfig)
+    getBrokerConfig uid = do
       settings <- getSettings uid
       pure $ settingsToBrokerConfig settings
 
-    openOrderHandler req = do
-      let uid = getCurrentUserId
-          instId = openInstrumentId req
-      
-      -- CHECK 1: Duplicate position prevention (per TODO.md!)
-      hasDuplicate <- checkDuplicatePosition uid instId
-      
-      case hasDuplicate of
-        True -> 
-          pure $ OpenOrderResponse
-            { openSuccess = False
-            , openOrderId = Nothing
-            , openStatus = "rejected"
-            , openError = Just $ "Duplicate position: You already have an active position for " <> unInstrumentId instId
-            , openWarning = Nothing
-            }
-        
-        False -> do
-          let orderReq = OrderRequest
-                { orderRequestPositionId = openPositionId req
-                , orderRequestInstrumentId = instId
-                , orderRequestSide = openSide req
-                , orderRequestQuantity = openQuantity req
-                , orderRequestPrice = openPrice req
-                , orderRequestOrderType = openOrderType req
-                , orderRequestTPPrice = openTPPrice req
-                , orderRequestSLPrice = openSLPrice req
-                }
-
-          -- Get broker configuration from user settings
-          mBrokerConfig <- getBrokerConfig
+    openOrderHandler mAuthHeader req = do
+      authResult <- resolveUser mAuthHeader
+      case authResult of
+        Left err -> pure $ OpenOrderResponse
+          { openSuccess = False
+          , openOrderId = Nothing
+          , openStatus = "unauthorized"
+          , openError = Just err
+          , openWarning = Nothing
+          }
+        Right uid -> do
+          let instId = openInstrumentId req
           
-          case mBrokerConfig of
-            Nothing -> 
-              -- No broker configured
+          -- CHECK 1: Duplicate position prevention
+          hasDuplicate <- checkDuplicatePosition uid instId
+          
+          case hasDuplicate of
+            True -> 
               pure $ OpenOrderResponse
                 { openSuccess = False
                 , openOrderId = Nothing
-                , openStatus = "error"
-                , openError = Just "No broker configured. Please set up broker credentials in settings."
+                , openStatus = "rejected"
+                , openError = Just $ "Duplicate position: You already have an active position for " <> unInstrumentId instId
                 , openWarning = Nothing
                 }
             
-            Just brokerConfig -> do
-              -- Check if using sandbox mode for warning message
-              let warningMsg = case brokerConfig of
-                    TBankConfig _ _ Sandbox -> Just "Using T-Bank SANDBOX mode (virtual money)"
-                    TBankConfig _ _ Real -> Just "WARNING: Using T-Bank REAL trading (real money)!"
-                    OKXConfig _ _ _ demo -> if demo 
-                      then Just "Using OKX demo mode"
-                      else Nothing
-              
-              -- CHECK 2: Liquidity Guardian (MOEX-specific, critical for thin markets)
-              liquidityWarning <- case brokerConfig of
-                TBankConfig{} -> do
-                  assessment <- checkLiquidity brokerConfig instId (openQuantity req) (openSide req)
-                  let est = laSlippageEstimate assessment
-                  pure $ if laIsLiquid assessment
-                    then Nothing  -- Liquid enough
-                    else Just $ Text.concat
-                      [ "LIQUIDITY WARNING: Expected slippage "
-                      , Text.pack $ show (seExpectedSlippage est)
-                      , "%, spread "
-                      , Text.pack $ show (laSpreadPercent assessment)
-                      , "%, bid volume "
-                      , Text.pack $ show (laBidVolume assessment)
-                      , ", ask volume "
-                      , Text.pack $ show (laAskVolume assessment)
-                      ]
-                _ -> pure Nothing  -- No liquidity check for crypto (24/7 liquid markets)
-              
-              -- Combine warnings
-              let combinedWarning = case (warningMsg, liquidityWarning) of
-                    (Just w, Just lw) -> Just $ w <> " | " <> lw
-                    (Just w, Nothing) -> Just w
-                    (Nothing, Just lw) -> Just lw
-                    (Nothing, Nothing) -> Nothing
-              
-              -- Submit order via configured broker
-              response <- placeOrder brokerConfig orderReq
+            False -> do
+              let orderReq = OrderRequest
+                    { orderRequestPositionId = openPositionId req
+                    , orderRequestInstrumentId = instId
+                    , orderRequestSide = openSide req
+                    , orderRequestQuantity = openQuantity req
+                    , orderRequestPrice = openPrice req
+                    , orderRequestOrderType = openOrderType req
+                    , orderRequestTPPrice = openTPPrice req
+                    , orderRequestSLPrice = openSLPrice req
+                    }
 
-              pure $ OpenOrderResponse
-                { openSuccess = True
-                , openOrderId = Just $ orderResponseOrderId response
-                , openStatus = "pending"
-                , openError = Nothing
-                , openWarning = combinedWarning
+              -- Get broker configuration from user settings
+              mBrokerConfig <- getBrokerConfig uid
+              
+              case mBrokerConfig of
+                Nothing -> 
+                  pure $ OpenOrderResponse
+                    { openSuccess = False
+                    , openOrderId = Nothing
+                    , openStatus = "error"
+                    , openError = Just "No broker configured. Please set up broker credentials in settings."
+                    , openWarning = Nothing
+                    }
+                
+                Just brokerConfig -> do
+                  -- Check if using sandbox mode for warning message
+                  let warningMsg = case brokerConfig of
+                        TBankConfig _ _ Sandbox -> Just "Using T-Bank SANDBOX mode (virtual money)"
+                        TBankConfig _ _ Real -> Just "WARNING: Using T-Bank REAL trading (real money)!"
+                        OKXConfig _ _ _ demo -> if demo 
+                          then Just "Using OKX demo mode"
+                          else Nothing
+                  
+                  -- CHECK 2: Market hours (MOEX-specific)
+                  marketCheck <- case brokerConfig of
+                    TBankConfig{} -> do
+                      status <- getTradingStatus brokerConfig instId
+                      pure $ if isMarketOpen status
+                        then Nothing
+                        else Just $ "MOEX market is closed (status: " <> Text.pack (show status)
+                              <> "). Trading hours: Mon-Fri 10:00-18:45 MSK"
+                    _ -> pure Nothing  -- Crypto markets are 24/7
+
+                  case marketCheck of
+                    Just marketError -> pure $ OpenOrderResponse
+                      { openSuccess = False
+                      , openOrderId = Nothing
+                      , openStatus = "rejected"
+                      , openError = Just marketError
+                      , openWarning = Nothing
+                      }
+                    Nothing -> do
+                      -- CHECK 3: Liquidity Guardian (MOEX-specific)
+                      liquidityWarning <- case brokerConfig of
+                        TBankConfig{} -> do
+                          assessment <- checkLiquidity brokerConfig instId (openQuantity req) (openSide req)
+                          let est = laSlippageEstimate assessment
+                          pure $ if laIsLiquid assessment
+                            then Nothing
+                            else Just $ Text.concat
+                              [ "LIQUIDITY WARNING: Expected slippage "
+                              , Text.pack $ show (seExpectedSlippage est)
+                              , "%, spread "
+                              , Text.pack $ show (laSpreadPercent assessment)
+                              , "%, bid volume "
+                              , Text.pack $ show (laBidVolume assessment)
+                              , ", ask volume "
+                              , Text.pack $ show (laAskVolume assessment)
+                              ]
+                        _ -> pure Nothing
+                      
+                      -- Combine warnings
+                      let combinedWarning = case (warningMsg, liquidityWarning) of
+                            (Just w, Just lw) -> Just $ w <> " | " <> lw
+                            (Just w, Nothing) -> Just w
+                            (Nothing, Just lw) -> Just lw
+                            (Nothing, Nothing) -> Nothing
+                      
+                      -- Submit order via configured broker
+                      response <- placeOrder brokerConfig orderReq
+
+                      pure $ OpenOrderResponse
+                        { openSuccess = True
+                        , openOrderId = Just $ orderResponseOrderId response
+                        , openStatus = "pending"
+                        , openError = Nothing
+                        , openWarning = combinedWarning
+                        }
+
+    cancelOrderHandler mAuthHeader req = do
+      authResult <- resolveUser mAuthHeader
+      case authResult of
+        Left _ -> pure $ CancelOrderResponse
+          { cancelSuccess = False
+          , cancelError = Just "Unauthorized"
+          }
+        Right _uid -> do
+          let cancelReq = CancelRequest
+                { cancelRequestOrderId = cancelOrderId req
+                , cancelRequestPositionId = cancelPositionId req
                 }
 
-    cancelOrderHandler req = do
-      let cancelReq = CancelRequest
-            { cancelRequestOrderId = cancelOrderId req
-            , cancelRequestPositionId = cancelPositionId req
-            }
+          -- Get broker configuration from user settings
+          mBrokerConfig <- getBrokerConfig _uid
+          
+          case mBrokerConfig of
+            Nothing ->
+              pure $ CancelOrderResponse
+                { cancelSuccess = False
+                , cancelError = Just "No broker configured"
+                }
+            
+            Just brokerConfig -> do
+              success <- cancelOrder brokerConfig cancelReq
 
-      -- Get broker configuration from user settings
-      mBrokerConfig <- getBrokerConfig
-      
-      case mBrokerConfig of
-        Nothing ->
-          pure $ CancelOrderResponse
-            { cancelSuccess = False
-            , cancelError = Just "No broker configured"
-            }
-        
-        Just brokerConfig -> do
-          success <- cancelOrder brokerConfig cancelReq
-
-          pure $ CancelOrderResponse
-            { cancelSuccess = success
-            , cancelError = if success then Nothing else Just "Failed to cancel order"
-            }
+              pure $ CancelOrderResponse
+                { cancelSuccess = success
+                , cancelError = if success then Nothing else Just "Failed to cancel order"
+                }

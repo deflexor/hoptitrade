@@ -17,10 +17,11 @@ main = do
   -- Initialize application with database and encryption
   (app, pool, _encCtx) <- initializeApp
   
-  -- RECOVER OPEN POSITIONS ON STARTUP (per TODO.md requirement!)
+  -- RECOVER OPEN POSITIONS ON STARTUP
+  -- TODO: Replace with multi-user recovery from database query
   putStrLn ""
   putStrLn "=== Position Recovery ==="
-  let uid = UserId $ read "550e8400-e29b-41d4-a716-446655440000"  -- TODO: Get from auth
+  let uid = UserId $ read "550e8400-e29b-41d4-a716-446655440000"  -- TODO: Query all users with open positions
   _ <- runM @IO $ runPositionWithPool pool $ recoverOpenPositions uid
   putStrLn "========================"
   
@@ -30,12 +31,12 @@ main = do
   putStrLn "  GET  /health"
   putStrLn "  POST /auth/login"
   putStrLn "  GET  /strategies"
-  putStrLn "  GET  /positions"
-  putStrLn "  POST /orders/open"
-  putStrLn "  GET  /settings"
-  putStrLn "  POST /settings/credentials/okx"
-  putStrLn "  POST /settings/credentials/tbank"
-  putStrLn "  GET  /settings/tbank/sandbox/accounts"
+  putStrLn "  GET  /positions       (requires Authorization header)"
+  putStrLn "  POST /orders/open     (requires Authorization header)"
+  putStrLn "  GET  /settings        (requires Authorization header)"
+  putStrLn "  POST /settings/credentials/okx   (requires Authorization header)"
+  putStrLn "  POST /settings/credentials/tbank (requires Authorization header)"
+  putStrLn "  GET  /settings/tbank/sandbox/accounts (requires Authorization header)"
   putStrLn ""
   
   run 8080 app

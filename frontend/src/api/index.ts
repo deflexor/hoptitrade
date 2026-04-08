@@ -18,8 +18,31 @@ import {
   SetDefaultAccountRequest,
   SetBrokerRequest,
 } from '@/domain/types';
+import { useAuthStore } from '@/stores';
 
 const API_BASE = '/api';
+
+// ============================================================================
+// Auth Header Helper
+// ============================================================================
+
+function getAuthHeaders(): HeadersInit {
+  const token = useAuthStore.getState().token;
+  const headers: HeadersInit = { 'Content-Type': 'application/json' };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
+
+function getAuthHeadersNoBody(): HeadersInit {
+  const token = useAuthStore.getState().token;
+  const headers: HeadersInit = {};
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+  return headers;
+}
 
 // ============================================================================
 // Strategies API
@@ -59,11 +82,13 @@ export function usePositions(status?: string) {
     queryKey: ['positions', status],
     queryFn: async (): Promise<Position[]> => {
       const params = status ? `?status=${status}` : '';
-      const response = await fetch(`${API_BASE}/positions${params}`);
+      const response = await fetch(`${API_BASE}/positions${params}`, {
+        headers: getAuthHeadersNoBody(),
+      });
       if (!response.ok) throw new Error('Failed to fetch positions');
       return response.json();
     },
-    refetchInterval: 2000, // Refetch every 2 seconds for active positions
+    refetchInterval: 2000,
   });
 }
 
@@ -71,7 +96,9 @@ export function usePosition(positionId: string) {
   return useQuery({
     queryKey: ['position', positionId],
     queryFn: async (): Promise<Position> => {
-      const response = await fetch(`${API_BASE}/positions/${positionId}`);
+      const response = await fetch(`${API_BASE}/positions/${positionId}`, {
+        headers: getAuthHeadersNoBody(),
+      });
       if (!response.ok) throw new Error('Failed to fetch position');
       return response.json();
     },
@@ -86,7 +113,7 @@ export function useClosePosition() {
     mutationFn: async (positionId: string) => {
       const response = await fetch(`${API_BASE}/positions/${positionId}/close`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
       });
       if (!response.ok) throw new Error('Failed to close position');
       return response.json();
@@ -119,7 +146,7 @@ export function useOpenOrder() {
     mutationFn: async (request: OpenOrderRequest): Promise<OpenOrderResponse> => {
       const response = await fetch(`${API_BASE}/orders/open`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(request),
       });
       if (!response.ok) throw new Error('Failed to open order');
@@ -139,7 +166,7 @@ export function useCancelOrder() {
     mutationFn: async ({ orderId, positionId }: { orderId: string; positionId: string }): Promise<CancelOrderResponse> => {
       const response = await fetch(`${API_BASE}/orders/cancel`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ cancelOrderId: orderId, cancelPositionId: positionId }),
       });
       if (!response.ok) throw new Error('Failed to cancel order');
@@ -160,7 +187,9 @@ export function useSettings() {
   return useQuery({
     queryKey: ['settings'],
     queryFn: async (): Promise<SettingsResponse> => {
-      const response = await fetch(`${API_BASE}/settings`);
+      const response = await fetch(`${API_BASE}/settings`, {
+        headers: getAuthHeadersNoBody(),
+      });
       if (!response.ok) throw new Error('Failed to fetch settings');
       return response.json();
     },
@@ -174,7 +203,7 @@ export function useUpdateSettings() {
     mutationFn: async (settings: UpdateSettingsRequest): Promise<SettingsResponse> => {
       const response = await fetch(`${API_BASE}/settings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(settings),
       });
       if (!response.ok) throw new Error('Failed to update settings');
@@ -194,7 +223,9 @@ export function useBrokerConfig() {
   return useQuery({
     queryKey: ['broker', 'config'],
     queryFn: async (): Promise<BrokerConfig | null> => {
-      const response = await fetch(`${API_BASE}/settings/broker/config`);
+      const response = await fetch(`${API_BASE}/settings/broker/config`, {
+        headers: getAuthHeadersNoBody(),
+      });
       if (!response.ok) throw new Error('Failed to fetch broker config');
       return response.json();
     },
@@ -208,7 +239,7 @@ export function useSetBroker() {
     mutationFn: async (request: SetBrokerRequest): Promise<SettingsResponse> => {
       const response = await fetch(`${API_BASE}/settings/broker`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(request),
       });
       if (!response.ok) throw new Error('Failed to set broker');
@@ -232,7 +263,7 @@ export function useSaveOKXCredentials() {
     mutationFn: async (credentials: UpdateOKXCredentialsRequest): Promise<CredentialsResponse> => {
       const response = await fetch(`${API_BASE}/settings/credentials/okx`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(credentials),
       });
       if (!response.ok) throw new Error('Failed to save OKX credentials');
@@ -256,7 +287,7 @@ export function useSaveTBankCredentials() {
     mutationFn: async (credentials: UpdateTBankCredentialsRequest): Promise<CredentialsResponse> => {
       const response = await fetch(`${API_BASE}/settings/credentials/tbank`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(credentials),
       });
       if (!response.ok) throw new Error('Failed to save T-Bank credentials');
@@ -273,11 +304,13 @@ export function useTBankSandboxAccounts() {
   return useQuery({
     queryKey: ['tbank', 'sandbox', 'accounts'],
     queryFn: async (): Promise<TBankSandboxAccountsResponse> => {
-      const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts`);
+      const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts`, {
+        headers: getAuthHeadersNoBody(),
+      });
       if (!response.ok) throw new Error('Failed to fetch T-Bank sandbox accounts');
       return response.json();
     },
-    enabled: false, // Don't fetch automatically, only when needed
+    enabled: false,
   });
 }
 
@@ -288,7 +321,7 @@ export function useSaveTBankSandboxAccount() {
     mutationFn: async (account: SaveTBankSandboxAccountRequest): Promise<CredentialsResponse> => {
       const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(account),
       });
       if (!response.ok) throw new Error('Failed to save T-Bank sandbox account');
@@ -308,7 +341,7 @@ export function useSetDefaultTBankSandboxAccount() {
     mutationFn: async (accountId: string): Promise<CredentialsResponse> => {
       const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts/default`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({ sdarAccountId: accountId }),
       });
       if (!response.ok) throw new Error('Failed to set default T-Bank sandbox account');

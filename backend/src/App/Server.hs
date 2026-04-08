@@ -29,11 +29,8 @@ import Effects.Settings (SettingsEffect, runSettingsWithPool, runSettingsIO, ini
 import Infrastructure.Encryption (EncryptionContext, initializeEncryption)
 import Effects.WebSocket (WebSocketEffect, runWebSocketIO)
 import Control.Monad.IO.Class (liftIO)
-import Network.Wai (Application)
-import Network.Wai.Handler.Warp (run)
 import Network.Wai.Middleware.Cors (simpleCors)
 import Polysemy
-import Polysemy.Embed
 import Servant
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory)

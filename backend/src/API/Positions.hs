@@ -10,13 +10,14 @@ import Data.Aeson (FromJSON, ToJSON)
 import Data.Scientific (Scientific)
 import Data.Text (Text)
 import Domain.Greeks (Greeks)
-import Domain.Position (Position (..), PositionLeg (..), PositionUpdate)
-import Domain.Types (OrderId (..), PositionId (..), PositionStatus (..), Side (..))
+import Domain.Position (Position (..), PositionLeg (..))
+import Domain.Types (OrderId (..), PositionId (..), PositionStatus (..), Side (..), UserId)
 import Data.Time (UTCTime)
+import Domain.User (AuthToken (..))
+import Effects.Auth (AuthEffect, extractBearerToken, verifyToken)
 import Effects.Position
 import GHC.Generics (Generic)
 import Polysemy
-import Polysemy.Error
 import Servant
 
 -- ============================================================================
@@ -24,9 +25,9 @@ import Servant
 -- ============================================================================
 
 type PositionsAPI =
-  "positions" :> QueryParam "status" PositionStatus :> Get '[JSON] [PositionResponse]
-  :<|> "positions" :> Capture "positionId" PositionId :> Get '[JSON] (Maybe PositionResponse)
-  :<|> "positions" :> Capture "positionId" PositionId :> "close" :> Post '[JSON] ClosePositionResponse
+  "positions" :> Header "Authorization" Text :> QueryParam "status" PositionStatus :> Get '[JSON] [PositionResponse]
+  :<|> "positions" :> Header "Authorization" Text :> Capture "positionId" PositionId :> Get '[JSON] (Maybe PositionResponse)
+  :<|> "positions" :> Header "Authorization" Text :> Capture "positionId" PositionId :> "close" :> Post '[JSON] ClosePositionResponse
 
 -- ============================================================================
 -- Response Types
@@ -65,33 +66,53 @@ data ClosePositionResponse = ClosePositionResponse
 -- Server
 -- ============================================================================
 
-positionsServer :: Members '[PositionEffect, Embed IO] r => ServerT PositionsAPI (Sem r)
+positionsServer :: Members '[AuthEffect, PositionEffect, Embed IO] r => ServerT PositionsAPI (Sem r)
 positionsServer = listPositionsHandler :<|> getPositionHandler :<|> closePositionHandler
   where
-    listPositionsHandler _mStatus = do
-      -- TODO: Get current user ID from auth context
-      -- For now, return empty list
-      pure []
+    resolveUser :: Member AuthEffect r => Maybe Text -> Sem r (Maybe UserId)
+    resolveUser mAuthHeader = case mAuthHeader >>= extractBearerToken of
+      Nothing -> pure Nothing
+      Just token -> verifyToken (AuthToken token)
 
-    getPositionHandler positionId = do
-      mPosition <- getPosition positionId
-      pure $ fmap toPositionResponse mPosition
+    listPositionsHandler mAuthHeader _mStatus = do
+      mUid <- resolveUser mAuthHeader
+      case mUid of
+        Nothing -> pure []
+        Just _uid -> do
+          -- TODO: Pass UserId to listPositions for proper filtering
+          pure []
 
-    closePositionHandler positionId = do
-      mPosition <- closePosition positionId
-      case mPosition of
-        Just _ ->
-          pure $ ClosePositionResponse
-            { closeSuccess = True
-            , closePositionId = positionId
-            , closeError = Nothing
-            }
-        Nothing ->
-          pure $ ClosePositionResponse
-            { closeSuccess = False
-            , closePositionId = positionId
-            , closeError = Just "Position not found or already closed"
-            }
+    getPositionHandler mAuthHeader positionId = do
+      mUid <- resolveUser mAuthHeader
+      case mUid of
+        Nothing -> pure Nothing
+        Just _uid -> do
+          mPosition <- getPosition positionId
+          pure $ fmap toPositionResponse mPosition
+
+    closePositionHandler mAuthHeader positionId = do
+      mUid <- resolveUser mAuthHeader
+      case mUid of
+        Nothing -> pure $ ClosePositionResponse
+          { closeSuccess = False
+          , closePositionId = positionId
+          , closeError = Just "Unauthorized"
+          }
+        Just _uid -> do
+          mPosition <- closePosition positionId
+          case mPosition of
+            Just _ ->
+              pure $ ClosePositionResponse
+                { closeSuccess = True
+                , closePositionId = positionId
+                , closeError = Nothing
+                }
+            Nothing ->
+              pure $ ClosePositionResponse
+                { closeSuccess = False
+                , closePositionId = positionId
+                , closeError = Just "Position not found or already closed"
+                }
 
 toPositionResponse :: Position -> PositionResponse
 toPositionResponse pos = PositionResponse

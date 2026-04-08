@@ -8,12 +8,10 @@ module API.Auth
 
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Text (Text)
-import Data.Time (UTCTime)
 import Domain.User (AuthToken (..), User (..), UserCredentials (..))
 import Effects.Auth
 import GHC.Generics (Generic)
 import Polysemy
-import Polysemy.Error
 import Servant
 
 -- ============================================================================

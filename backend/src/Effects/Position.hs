@@ -15,21 +15,18 @@ module Effects.Position
   , runPositionIO
   ) where
 
-import Data.Maybe (listToMaybe)
-import Data.Scientific (Scientific)
 import Data.Text (Text)
 import qualified Data.Text as Text
-import Data.Time (UTCTime, getCurrentTime)
+import Data.Time (getCurrentTime)
 import Data.UUID (UUID)
 import qualified Data.UUID as UUID
 import Data.UUID.V4 (nextRandom)
 import Database.Persist.Sql (ConnectionPool)
-import Domain.Position (Position (..), PositionLeg (..), PositionUpdate)
-import Domain.Strategy (Strategy)
+import Domain.Position (Position (..), PositionLeg (..), PositionUpdate (..))
+import Domain.Strategy (Strategy (..))
 import Domain.Types (InstrumentId (..), OrderId (..), PositionId (..), PositionStatus (..), Side (..), StrategyId (..), UserId (..))
 import qualified Infrastructure.Persistence as DB
 import Polysemy
-import Polysemy.Embed
 
 data PositionEffect m a where
   CreatePosition :: UserId -> Strategy -> PositionEffect m Position
@@ -97,6 +94,12 @@ textToSide _      = Buy
 readUUID :: Text -> Maybe UUID
 readUUID = UUID.fromString . Text.unpack
 
+-- | Apply a PositionUpdate to an existing Position
+applyPositionUpdate :: Position -> PositionUpdate -> Position
+applyPositionUpdate pos update = pos
+  { positionStatus = posUpdateStatus update
+  }
+
 -- ============================================================================
 -- Interpreter with ConnectionPool
 -- ============================================================================
@@ -108,7 +111,7 @@ runPositionWithPool pool = interpret $ \case
     pid <- nextRandom
     let position = Position
           { positionId = PositionId pid
-          , positionStrategyId = undefined  -- TODO: wire strategy ID
+          , positionStrategyId = strategyId _strategy
           , positionStatus = PositionOpening
           , positionLegs = []
           , positionGreeks = Nothing
@@ -127,10 +130,14 @@ runPositionWithPool pool = interpret $ \case
     case mEntity of
       Nothing -> pure Nothing
       Just entity -> do
-        -- TODO: Apply update to entity and save
         let pidText = DB.positionEntityPositionId entity
         legs <- DB.getPositionLegs pool pidText
-        pure $ entityToPosition entity legs
+        case entityToPosition entity legs of
+          Nothing -> pure Nothing
+          Just pos -> do
+            let updatedPos = applyPositionUpdate pos update
+            DB.updatePosition pool updatedPos
+            pure $ Just updatedPos
 
   ClosePosition pid -> embed @IO $ do
     mEntity <- DB.getPositionById pool pid
@@ -139,7 +146,16 @@ runPositionWithPool pool = interpret $ \case
       Just entity -> do
         let pidText = DB.positionEntityPositionId entity
         legs <- DB.getPositionLegs pool pidText
-        pure $ entityToPosition entity legs
+        case entityToPosition entity legs of
+          Nothing -> pure Nothing
+          Just pos -> do
+            now <- getCurrentTime
+            let closedPos = pos
+                  { positionStatus = PositionClosing
+                  , positionClosedAt = Just now
+                  }
+            DB.updatePosition pool closedPos
+            pure $ Just closedPos
 
   GetPosition pid -> embed @IO $ do
     mEntity <- DB.getPositionById pool pid
