@@ -33,6 +33,7 @@ module Infrastructure.Persistence
   , getPositions
   , getOpenPositions
   , getPositionById
+  , getPositionLegs
   , savePosition
   , updatePosition
   , deletePosition
@@ -568,3 +569,9 @@ getActiveInstruments :: MonadIO m => ConnectionPool -> UserId -> m [Text]
 getActiveInstruments pool (UserId uid) = withDatabase pool $ do
   entities <- selectList [ActiveInstrumentUserId ==. Text.pack (show uid)] []
   return $ map (activeInstrumentInstrumentId . entityVal) entities
+
+-- | Get legs for a position by position ID text
+getPositionLegs :: MonadIO m => ConnectionPool -> Text -> m [PositionLegEntity]
+getPositionLegs pool pidText = withDatabase pool $ do
+  entities <- selectList [PositionLegEntityPositionId ==. pidText] []
+  return $ map entityVal entities

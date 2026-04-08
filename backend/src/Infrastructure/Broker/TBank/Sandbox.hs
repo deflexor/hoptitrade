@@ -25,6 +25,16 @@ module Infrastructure.Broker.TBank.Sandbox
   , Quotation (..)
   , quotationToScientific
   , scientificToQuotation
+    -- * Order Conversion Helpers
+  , OrderDirection (..)
+  , TBankOrderType (..)
+  , mapSide
+  , mapOrderType
+  , mapExecutionStatus
+  , moneyValueToScientific
+  , sandboxOrderResponseToOrderResponse
+    -- * HTTP Helpers
+  , buildAuthRequest
     -- * Types
   , TBankError (..)
   ) where

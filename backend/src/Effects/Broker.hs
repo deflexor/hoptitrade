@@ -161,10 +161,13 @@ runBrokerIO = interpret $ \case
 
   CancelOrder config@TBankConfig{} req -> embed $ do
     putStrLn "Broker: Cancelling order via T-Bank"
-    result <- TBank.cancelOrder (tbankToken config) (cancelRequestOrderId req)
-    case result of
-      Left err -> error $ "T-Bank Error: " <> show err
-      Right success -> pure success
+    case tbankAccountId config of
+      Nothing -> error "T-Bank requires accountId for order cancellation"
+      Just accId -> do
+        result <- TBank.cancelOrder (tbankToken config) accId (cancelRequestOrderId req)
+        case result of
+          Left err -> error $ "T-Bank Error: " <> show err
+          Right success -> pure success
 
   GetOrderState config@OKXConfig{} orderId -> embed $ do
     putStrLn "Broker: Getting order state via OKX"
@@ -173,10 +176,13 @@ runBrokerIO = interpret $ \case
 
   GetOrderState config@TBankConfig{} orderId -> embed $ do
     putStrLn "Broker: Getting order state via T-Bank"
-    result <- TBank.getOrderState (tbankToken config) orderId
-    case result of
-      Left err -> error $ "T-Bank Error: " <> show err
-      Right mResp -> pure mResp
+    case tbankAccountId config of
+      Nothing -> error "T-Bank requires accountId for order state query"
+      Just accId -> do
+        result <- TBank.getOrderState (tbankToken config) accId orderId
+        case result of
+          Left err -> error $ "T-Bank Error: " <> show err
+          Right mResp -> pure mResp
 
   GetOrders config -> embed $ do
     putStrLn "Broker: Getting orders"

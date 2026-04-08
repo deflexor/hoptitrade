@@ -9,7 +9,8 @@ module API.Orders
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Scientific (Scientific)
 import Data.Text (Text)
-import Domain.Broker (BrokerConfig (..), BrokerMode (..))
+import qualified Data.Text as Text
+import Domain.Broker (BrokerConfig (..), BrokerMode (..), LiquidityAssessment (..), SlippageEstimate (..), defaultLiquidityThreshold)
 import Domain.Order (CancelRequest (..), OrderRequest (..), OrderResponse (..), OrderType (..))
 import Domain.Settings (settingsToBrokerConfig)
 import Domain.Types (InstrumentId (..), OrderId (..), PositionId (..), Quantity, Side (..), UserId (..))
@@ -136,6 +137,32 @@ ordersServer = openOrderHandler :<|> cancelOrderHandler
                       then Just "Using OKX demo mode"
                       else Nothing
               
+              -- CHECK 2: Liquidity Guardian (MOEX-specific, critical for thin markets)
+              liquidityWarning <- case brokerConfig of
+                TBankConfig{} -> do
+                  assessment <- checkLiquidity brokerConfig instId (openQuantity req) (openSide req)
+                  let est = laSlippageEstimate assessment
+                  pure $ if laIsLiquid assessment
+                    then Nothing  -- Liquid enough
+                    else Just $ Text.concat
+                      [ "LIQUIDITY WARNING: Expected slippage "
+                      , Text.pack $ show (seExpectedSlippage est)
+                      , "%, spread "
+                      , Text.pack $ show (laSpreadPercent assessment)
+                      , "%, bid volume "
+                      , Text.pack $ show (laBidVolume assessment)
+                      , ", ask volume "
+                      , Text.pack $ show (laAskVolume assessment)
+                      ]
+                _ -> pure Nothing  -- No liquidity check for crypto (24/7 liquid markets)
+              
+              -- Combine warnings
+              let combinedWarning = case (warningMsg, liquidityWarning) of
+                    (Just w, Just lw) -> Just $ w <> " | " <> lw
+                    (Just w, Nothing) -> Just w
+                    (Nothing, Just lw) -> Just lw
+                    (Nothing, Nothing) -> Nothing
+              
               -- Submit order via configured broker
               response <- placeOrder brokerConfig orderReq
 
@@ -144,7 +171,7 @@ ordersServer = openOrderHandler :<|> cancelOrderHandler
                 , openOrderId = Just $ orderResponseOrderId response
                 , openStatus = "pending"
                 , openError = Nothing
-                , openWarning = warningMsg
+                , openWarning = combinedWarning
                 }
 
     cancelOrderHandler req = do
