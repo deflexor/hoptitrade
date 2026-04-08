@@ -1,5 +1,23 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { Strategy, Position, Settings, UserCredentials, LoginResponse } from '@/domain/types';
+import {
+  Strategy,
+  Position,
+  SettingsResponse,
+  UserCredentials,
+  LoginResponse,
+  OpenOrderResponse,
+  CancelOrderResponse,
+  CredentialsResponse,
+  TBankSandboxAccountsResponse,
+  BrokerConfig,
+  SelectedBroker,
+  UpdateSettingsRequest,
+  UpdateOKXCredentialsRequest,
+  UpdateTBankCredentialsRequest,
+  SaveTBankSandboxAccountRequest,
+  SetDefaultAccountRequest,
+  SetBrokerRequest,
+} from '@/domain/types';
 
 const API_BASE = '/api';
 
@@ -98,7 +116,7 @@ export function useOpenOrder() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (request: OpenOrderRequest) => {
+    mutationFn: async (request: OpenOrderRequest): Promise<OpenOrderResponse> => {
       const response = await fetch(`${API_BASE}/orders/open`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -109,6 +127,7 @@ export function useOpenOrder() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['positions'] });
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
     },
   });
 }
@@ -117,7 +136,7 @@ export function useCancelOrder() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async ({ orderId, positionId }: { orderId: string; positionId: string }) => {
+    mutationFn: async ({ orderId, positionId }: { orderId: string; positionId: string }): Promise<CancelOrderResponse> => {
       const response = await fetch(`${API_BASE}/orders/cancel`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -128,18 +147,19 @@ export function useCancelOrder() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['positions'] });
+      queryClient.invalidateQueries({ queryKey: ['orders'] });
     },
   });
 }
 
 // ============================================================================
-// Settings API
+// Settings API - General
 // ============================================================================
 
 export function useSettings() {
   return useQuery({
     queryKey: ['settings'],
-    queryFn: async (): Promise<Settings> => {
+    queryFn: async (): Promise<SettingsResponse> => {
       const response = await fetch(`${API_BASE}/settings`);
       if (!response.ok) throw new Error('Failed to fetch settings');
       return response.json();
@@ -147,18 +167,11 @@ export function useSettings() {
   });
 }
 
-interface UpdateSettingsRequest {
-  updateMaxLossPercent: number;
-  updateMaxPositionSize: number;
-  updateMaxOpenPositions: number;
-  updateAutoModeEnabled: boolean;
-}
-
 export function useUpdateSettings() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (settings: UpdateSettingsRequest) => {
+    mutationFn: async (settings: UpdateSettingsRequest): Promise<SettingsResponse> => {
       const response = await fetch(`${API_BASE}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -173,27 +186,136 @@ export function useUpdateSettings() {
   });
 }
 
-interface UpdateCredentialsRequest {
-  credApiKey: string;
-  credApiSecret: string;
-  credPassphrase: string;
-  credIsDemo: boolean;
+// ============================================================================
+// Settings API - Broker Selection
+// ============================================================================
+
+export function useBrokerConfig() {
+  return useQuery({
+    queryKey: ['broker', 'config'],
+    queryFn: async (): Promise<BrokerConfig | null> => {
+      const response = await fetch(`${API_BASE}/settings/broker/config`);
+      if (!response.ok) throw new Error('Failed to fetch broker config');
+      return response.json();
+    },
+  });
 }
 
-export function useUpdateCredentials() {
+export function useSetBroker() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: async (credentials: UpdateCredentialsRequest) => {
-      const response = await fetch(`${API_BASE}/settings/credentials`, {
+    mutationFn: async (request: SetBrokerRequest): Promise<SettingsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/broker`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) throw new Error('Failed to set broker');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['broker', 'config'] });
+    },
+  });
+}
+
+// ============================================================================
+// Settings API - OKX Credentials
+// ============================================================================
+
+export function useSaveOKXCredentials() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (credentials: UpdateOKXCredentialsRequest): Promise<CredentialsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/credentials/okx`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials),
       });
-      if (!response.ok) throw new Error('Failed to update credentials');
+      if (!response.ok) throw new Error('Failed to save OKX credentials');
       return response.json();
     },
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['broker', 'config'] });
+    },
+  });
+}
+
+// ============================================================================
+// Settings API - T-Bank Credentials
+// ============================================================================
+
+export function useSaveTBankCredentials() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (credentials: UpdateTBankCredentialsRequest): Promise<CredentialsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/credentials/tbank`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials),
+      });
+      if (!response.ok) throw new Error('Failed to save T-Bank credentials');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['broker', 'config'] });
+    },
+  });
+}
+
+export function useTBankSandboxAccounts() {
+  return useQuery({
+    queryKey: ['tbank', 'sandbox', 'accounts'],
+    queryFn: async (): Promise<TBankSandboxAccountsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts`);
+      if (!response.ok) throw new Error('Failed to fetch T-Bank sandbox accounts');
+      return response.json();
+    },
+    enabled: false, // Don't fetch automatically, only when needed
+  });
+}
+
+export function useSaveTBankSandboxAccount() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (account: SaveTBankSandboxAccountRequest): Promise<CredentialsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(account),
+      });
+      if (!response.ok) throw new Error('Failed to save T-Bank sandbox account');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tbank', 'sandbox', 'accounts'] });
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+    },
+  });
+}
+
+export function useSetDefaultTBankSandboxAccount() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (accountId: string): Promise<CredentialsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/tbank/sandbox/accounts/default`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sdarAccountId: accountId }),
+      });
+      if (!response.ok) throw new Error('Failed to set default T-Bank sandbox account');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['tbank', 'sandbox', 'accounts'] });
       queryClient.invalidateQueries({ queryKey: ['settings'] });
     },
   });
@@ -234,4 +356,59 @@ export function useLogout() {
       return response.json();
     },
   });
+}
+
+// ============================================================================
+// Utility Hooks
+// ============================================================================
+
+// Hook to check if user has an active broker configured
+export function useHasActiveBroker(): boolean {
+  const { data: settings } = useSettings();
+  return settings?.settingsHasActiveBroker ?? false;
+}
+
+// Hook to get current broker status for UI
+export function useBrokerStatus() {
+  const { data: settings } = useSettings();
+  const { data: brokerConfig } = useBrokerConfig();
+
+  if (!settings) {
+    return {
+      isLoading: true,
+      isConfigured: false,
+      broker: SelectedBroker.BrokerNone,
+      mode: null,
+      warning: null,
+    };
+  }
+
+  const broker = settings.settingsSelectedBroker;
+  const useSandbox = settings.settingsUseSandbox;
+  const isConfigured = settings.settingsHasActiveBroker;
+
+  let warning: string | null = null;
+  if (broker === SelectedBroker.BrokerTBank) {
+    if (useSandbox) {
+      warning = 'Using T-Bank SANDBOX mode (virtual money)';
+    } else {
+      warning = 'WARNING: Using T-Bank REAL trading (real money)!';
+    }
+  } else if (broker === SelectedBroker.BrokerOKX) {
+    if (settings.settingsHasOKXCredentials) {
+      // OKX demo mode check would go here
+      warning = null;
+    }
+  }
+
+  return {
+    isLoading: false,
+    isConfigured,
+    broker,
+    mode: useSandbox ? 'Sandbox' : 'Real',
+    warning,
+    hasTBankSandbox: settings.settingsHasTBankSandboxToken,
+    hasTBankReal: settings.settingsHasTBankRealToken,
+    tbankRealEnabled: settings.settingsTBankRealTradingEnabled,
+  };
 }

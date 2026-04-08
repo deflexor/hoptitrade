@@ -7,9 +7,15 @@ export type StrategyId = UUID;
 export type PositionId = UUID;
 export type OrderId = string;
 export type LegId = UUID;
+export type ApiKeyId = UUID;
 
 export type Price = number;
 export type Quantity = number;
+export type Percentage = number;
+
+// ============================================================================
+// Core Enums
+// ============================================================================
 
 export enum Side {
   Buy = 'buy',
@@ -45,6 +51,328 @@ export enum PositionStatus {
   PositionClosed = 'PositionClosed',
   PositionCancelled = 'PositionCancelled',
 }
+
+// ============================================================================
+// Broker Types
+// ============================================================================
+
+export enum Broker {
+  OKX = 'OKX',
+  TBank = 'TBank',
+}
+
+export enum BrokerMode {
+  Sandbox = 'Sandbox',
+  Real = 'Real',
+}
+
+export enum SelectedBroker {
+  BrokerOKX = 'BrokerOKX',
+  BrokerTBank = 'BrokerTBank',
+  BrokerNone = 'BrokerNone',
+}
+
+export enum ExchangeType {
+  CryptoExchange = 'CryptoExchange',
+  MOEXExchange = 'MOEXExchange',
+}
+
+export enum TradingStatus {
+  NotAvailable = 'NotAvailable',
+  PreOpen = 'PreOpen',
+  OpeningAuction = 'OpeningAuction',
+  Trading = 'Trading',
+  ClosingAuction = 'ClosingAuction',
+  Closed = 'Closed',
+  Break = 'Break',
+  Suspended = 'Suspended',
+}
+
+export enum SlippageConfidence {
+  HighConfidence = 'HighConfidence',
+  MediumConfidence = 'MediumConfidence',
+  LowConfidence = 'LowConfidence',
+  UnknownConfidence = 'UnknownConfidence',
+}
+
+export enum Currency {
+  RUB = 'RUB',
+  USD = 'USD',
+  EUR = 'EUR',
+}
+
+// ============================================================================
+// Broker Configuration
+// ============================================================================
+
+export interface BrokerPreference {
+  bpSelectedBroker: SelectedBroker;
+  bpUseSandbox: boolean;
+}
+
+export interface BrokerConfig {
+  bcrBroker: Broker;
+  bcrMode: BrokerMode;
+  bcrIsConfigured: boolean;
+}
+
+export interface BrokerConnectionStatus {
+  tag: 'Connected' | 'Disconnected' | 'Authenticating' | 'Error';
+  contents?: string; // Error message when tag is 'Error'
+}
+
+// ============================================================================
+// Liquidity Assessment (MOEX-specific)
+// ============================================================================
+
+export interface SlippageEstimate {
+  seForQuantity: Quantity;
+  seExpectedSlippage: Percentage;
+  seMaxSlippage: Percentage;
+  seConfidence: SlippageConfidence;
+}
+
+export interface LiquidityAssessment {
+  laInstrumentId: string;
+  laTimestamp: string;
+  laBidVolume: Quantity;
+  laAskVolume: Quantity;
+  laSpreadPercent: Percentage;
+  laSlippageEstimate: SlippageEstimate;
+  laIsLiquid: boolean;
+}
+
+// ============================================================================
+// Trading Hours (MOEX-specific)
+// ============================================================================
+
+export interface SessionSegment {
+  ssStart: string; // Time in HH:MM:SS format
+  ssEnd: string;
+}
+
+export interface DaySession {
+  dsDate: string; // ISO 8601 date
+  dsIsTradingDay: boolean;
+  dsSessions: SessionSegment[];
+}
+
+export interface TradingSession {
+  tsExchange: string;
+  tsInstrumentType: string;
+  tsDays: DaySession[];
+}
+
+export interface TradingHours {
+  thExchangeType: ExchangeType;
+  thSessions: TradingSession[];
+  thCurrentStatus: TradingStatus;
+}
+
+// ============================================================================
+// Credentials
+// ============================================================================
+
+export interface OKXCredentials {
+  okxApiKeyId: ApiKeyId;
+  okxApiKey: string;
+  okxApiSecret: string;
+  okxPassphrase: string;
+  okxIsDemo: boolean;
+}
+
+export interface TBankCredentials {
+  // These are never returned from API (security)
+  // Only used when sending to backend
+  tbankSandboxToken?: string;
+  tbankRealToken?: string;
+  tbankSandboxAccounts: TBankSandboxInfo[];
+  tbankDefaultSandboxAccount: string | null;
+  tbankRealTradingEnabled: boolean;
+}
+
+export interface TBankSandboxInfo {
+  tsiAccountId: string;
+  tsiName: string | null;
+  tsiBalance: number | null;
+}
+
+// ============================================================================
+// Settings
+// ============================================================================
+
+export interface RiskParameters {
+  riskMaxLossPercent: number;
+  riskMaxPositionSize: number;
+  riskMaxOpenPositions: number;
+  riskAutoModeEnabled: boolean;
+}
+
+export interface Settings {
+  settingsUserId: UserId;
+  settingsBrokerPreference: BrokerPreference;
+  settingsOKXCredentials: OKXCredentials | null;
+  settingsTBankCredentials: TBankCredentials | null;
+  settingsRiskParams: RiskParameters;
+}
+
+// API Response version (credentials masked)
+export interface SettingsResponse {
+  settingsRiskMaxLossPercent: number;
+  settingsRiskMaxPositionSize: number;
+  settingsRiskMaxOpenPositions: number;
+  settingsRiskAutoModeEnabled: boolean;
+  settingsSelectedBroker: SelectedBroker;
+  settingsUseSandbox: boolean;
+  settingsHasOKXCredentials: boolean;
+  settingsHasTBankSandboxToken: boolean;
+  settingsHasTBankRealToken: boolean;
+  settingsTBankRealTradingEnabled: boolean;
+  settingsHasActiveBroker: boolean;
+}
+
+// ============================================================================
+// Settings API Requests
+// ============================================================================
+
+export interface UpdateSettingsRequest {
+  updateMaxLossPercent: number;
+  updateMaxPositionSize: number;
+  updateMaxOpenPositions: number;
+  updateAutoModeEnabled: boolean;
+}
+
+export interface UpdateOKXCredentialsRequest {
+  okxApiKey: string;
+  okxApiSecret: string;
+  okxPassphrase: string;
+  okxIsDemo: boolean;
+}
+
+export interface UpdateTBankCredentialsRequest {
+  tbankSandboxToken: string | null;
+  tbankRealToken: string | null;
+  tbankEnableRealTrading: boolean;
+}
+
+export interface SaveTBankSandboxAccountRequest {
+  stbarAccountId: string;
+  stbarName: string | null;
+  stbarBalance: number | null;
+}
+
+export interface SetDefaultAccountRequest {
+  sdarAccountId: string;
+}
+
+export interface SetBrokerRequest {
+  sbrBroker: SelectedBroker;
+  sbrUseSandbox: boolean;
+}
+
+export interface TBankSandboxAccountsResponse {
+  tsarAccounts: TBankSandboxInfo[];
+  tsarDefaultAccountId: string | null;
+}
+
+export interface CredentialsResponse {
+  credSuccess: boolean;
+  credError: string | null;
+  credMessage: string | null;
+}
+
+// ============================================================================
+// Order Types
+// ============================================================================
+
+export enum OrderType {
+  MarketOrder = 'MarketOrder',
+  LimitOrder = 'LimitOrder',
+  PostOnly = 'PostOnly',
+  FillOrKill = 'FillOrKill',
+  ImmediateOrCancel = 'ImmediateOrCancel',
+}
+
+export interface OrderRequest {
+  orderRequestPositionId: PositionId;
+  orderRequestInstrumentId: string;
+  orderRequestSide: Side;
+  orderRequestQuantity: Quantity;
+  orderRequestPrice: Price | null;
+  orderRequestOrderType: OrderType;
+  orderRequestTPPrice: Price | null;
+  orderRequestSLPrice: Price | null;
+}
+
+export interface OrderResponse {
+  orderResponseOrderId: OrderId;
+  orderResponseClientOrderId: string | null;
+  orderResponseStatus: OrderStatus;
+  orderResponseFilledQty: Quantity;
+  orderResponseAvgPrice: Price | null;
+  orderResponseTimestamp: string;
+}
+
+export interface OrderUpdate {
+  orderUpdateOrderId: OrderId;
+  orderUpdateStatus: OrderStatus;
+  orderUpdateFilledQty: Quantity;
+  orderUpdateRemainingQty: Quantity;
+  orderUpdateAvgPrice: Price | null;
+  orderUpdateTimestamp: string;
+}
+
+export interface OrderFill {
+  fillOrderId: OrderId;
+  fillTradeId: string;
+  fillPrice: Price;
+  fillQuantity: Quantity;
+  fillFee: number;
+  fillFeeCurrency: string;
+  fillTimestamp: string;
+}
+
+export interface CancelRequest {
+  cancelRequestOrderId: OrderId;
+  cancelRequestPositionId: PositionId;
+}
+
+// ============================================================================
+// API Order Requests/Responses
+// ============================================================================
+
+export interface OpenOrderRequest {
+  openPositionId: PositionId;
+  openInstrumentId: string;
+  openSide: Side;
+  openQuantity: Quantity;
+  openPrice: Price | null;
+  openOrderType: OrderType;
+  openTPPrice: Price | null;
+  openSLPrice: Price | null;
+}
+
+export interface OpenOrderResponse {
+  openSuccess: boolean;
+  openOrderId: OrderId | null;
+  openStatus: string;
+  openError: string | null;
+  openWarning: string | null; // e.g., "Using sandbox mode"
+}
+
+export interface CancelOrderRequest {
+  cancelOrderId: OrderId;
+  cancelPositionId: PositionId;
+}
+
+export interface CancelOrderResponse {
+  cancelSuccess: boolean;
+  cancelError: string | null;
+}
+
+// ============================================================================
+// Strategy Types
+// ============================================================================
 
 export interface Greeks {
   greeksDelta: number;
@@ -88,7 +416,7 @@ export interface StrategyType {
 
 export interface Strategy {
   strategyId: StrategyId;
-  strategyType: StrategyType | string;  // Can be object from backend or string
+  strategyType: StrategyType | string;
   strategyName: string;
   strategyDescription: string;
   strategyUnderlying: string;
@@ -101,11 +429,15 @@ export interface Strategy {
   strategyStatus: string;
   strategyCreatedAt: string;
   strategyExpiresAt: string;
-  strategyExpiration?: string;  // ISO 8601 expiration date
-  strategyDaysToExpiry?: number;  // Days until expiration
-  strategyQualityScore?: number;  // Quality score 0-100
-  strategyRiskRank?: number;  // Rank within risk category
+  strategyExpiration?: string;
+  strategyDaysToExpiry?: number;
+  strategyQualityScore?: number;
+  strategyRiskRank?: number;
 }
+
+// ============================================================================
+// Position Types
+// ============================================================================
 
 export interface PositionLeg {
   posLegOrderId: OrderId;
@@ -129,6 +461,10 @@ export interface Position {
   positionNotes: string | null;
 }
 
+// ============================================================================
+// User Types
+// ============================================================================
+
 export interface User {
   userId: UserId;
   userUsername: string;
@@ -138,12 +474,13 @@ export interface User {
   userLastLogin: string | null;
 }
 
-export interface Settings {
-  settingsRiskMaxLossPercent: number;
-  settingsRiskMaxPositionSize: number;
-  settingsRiskMaxOpenPositions: number;
-  settingsRiskAutoModeEnabled: boolean;
-  settingsHasOKXCredentials: boolean;
+// ============================================================================
+// Market Data Types
+// ============================================================================
+
+export interface PriceLevel {
+  priceLevelPrice: number;
+  priceLevelSize: number;
 }
 
 export interface MarketUpdate {
@@ -151,6 +488,13 @@ export interface MarketUpdate {
   bid: number | null;
   ask: number | null;
   lastPrice: number | null;
+  timestamp: string;
+}
+
+export interface OrderBook {
+  instrumentId: string;
+  bids: PriceLevel[];
+  asks: PriceLevel[];
   timestamp: string;
 }
 
@@ -168,4 +512,31 @@ export interface LoginResponse {
   token?: string;
   user?: User;
   error?: string;
+}
+
+// ============================================================================
+// Utility Types
+// ============================================================================
+
+// Helper type for API responses that can be success or error
+export type ApiResponse<T> =
+  | { success: true; data: T }
+  | { success: false; error: string };
+
+// Broker status for UI display
+export interface BrokerStatus {
+  broker: SelectedBroker;
+  mode: BrokerMode;
+  isActive: boolean;
+  isConfigured: boolean;
+  warning?: string; // Warning message for real trading
+}
+
+// Sandbox account status for UI
+export interface SandboxAccountStatus {
+  accountId: string;
+  name: string;
+  balance: number | null;
+  isDefault: boolean;
+  isActive: boolean;
 }
