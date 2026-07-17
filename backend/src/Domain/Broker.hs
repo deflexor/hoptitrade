@@ -47,6 +47,7 @@ data PriceLevel = PriceLevel
 data Broker
   = OKX
   | TBank
+  | Bybit
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -85,6 +86,11 @@ data BrokerConfig
       { tbankToken :: Text
       , tbankAccountId :: Maybe Text
       , tbankMode :: BrokerMode
+      }
+  | BybitConfig
+      { bybitApiKey :: Text
+      , bybitApiSecret :: Text
+      , bybitTestnet :: Bool
       }
   deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)

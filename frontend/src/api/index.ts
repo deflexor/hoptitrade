@@ -14,6 +14,8 @@ import {
   UpdateSettingsRequest,
   UpdateOKXCredentialsRequest,
   UpdateTBankCredentialsRequest,
+  UpdateBybitCredentialsRequest,
+  OpenPositionRequest,
   SaveTBankSandboxAccountRequest,
   SetDefaultAccountRequest,
   SetBrokerRequest,
@@ -116,6 +118,25 @@ export function useClosePosition() {
         headers: getAuthHeaders(),
       });
       if (!response.ok) throw new Error('Failed to close position');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['positions'] });
+    },
+  });
+}
+
+export function useOpenPosition() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (request: OpenPositionRequest) => {
+      const response = await fetch(`${API_BASE}/positions/open`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(request),
+      });
+      if (!response.ok) throw new Error('Failed to open position');
       return response.json();
     },
     onSuccess: () => {
@@ -267,6 +288,26 @@ export function useSaveOKXCredentials() {
         body: JSON.stringify(credentials),
       });
       if (!response.ok) throw new Error('Failed to save OKX credentials');
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['settings'] });
+      queryClient.invalidateQueries({ queryKey: ['broker', 'config'] });
+    },
+  });
+}
+
+export function useSaveBybitCredentials() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: async (credentials: UpdateBybitCredentialsRequest): Promise<CredentialsResponse> => {
+      const response = await fetch(`${API_BASE}/settings/credentials/bybit`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify(credentials),
+      });
+      if (!response.ok) throw new Error('Failed to save Bybit credentials');
       return response.json();
     },
     onSuccess: () => {

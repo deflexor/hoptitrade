@@ -7,6 +7,7 @@ module API.Settings
   ) where
 
 import Data.Aeson (FromJSON, ToJSON)
+import Data.Maybe (fromMaybe)
 import Data.Scientific (Scientific)
 import Data.Text (Text)
 import Domain.Broker (Broker (..), BrokerConfig (..), BrokerMode (..))
@@ -36,6 +37,9 @@ type SettingsAPI =
   -- T-Bank credentials
   :<|> "settings" :> "credentials" :> "tbank" :> Header "Authorization" Text :> ReqBody '[JSON] UpdateTBankCredentialsRequest :> Post '[JSON] CredentialsResponse
   
+  -- Bybit credentials
+  :<|> "settings" :> "credentials" :> "bybit" :> Header "Authorization" Text :> ReqBody '[JSON] UpdateBybitCredentialsRequest :> Post '[JSON] CredentialsResponse
+  
   -- T-Bank sandbox account management
   :<|> "settings" :> "tbank" :> "sandbox" :> "accounts" :> Header "Authorization" Text :> Get '[JSON] TBankSandboxAccountsResponse
   :<|> "settings" :> "tbank" :> "sandbox" :> "accounts" :> Header "Authorization" Text :> ReqBody '[JSON] SaveTBankSandboxAccountRequest :> Post '[JSON] CredentialsResponse
@@ -56,13 +60,18 @@ data SettingsResponse = SettingsResponse
   , settingsRiskMaxPositionSize :: Scientific
   , settingsRiskMaxOpenPositions :: Int
   , settingsRiskAutoModeEnabled :: Bool
+  , settingsRiskTakeProfitPercent :: Scientific
+  , settingsRiskRebalanceEnabled :: Bool
+  , settingsRiskMinRebalanceImprovement :: Scientific
   , settingsSelectedBroker :: DS.SelectedBroker
   , settingsUseSandbox :: Bool
   , settingsHasOKXCredentials :: Bool
   , settingsHasTBankSandboxToken :: Bool
   , settingsHasTBankRealToken :: Bool
   , settingsTBankRealTradingEnabled :: Bool
+  , settingsHasBybitCredentials :: Bool
   , settingsHasActiveBroker :: Bool
+  , settingsSupportedBybitCoins :: [Text]
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -71,6 +80,9 @@ data UpdateSettingsRequest = UpdateSettingsRequest
   , updateMaxPositionSize :: Scientific
   , updateMaxOpenPositions :: Int
   , updateAutoModeEnabled :: Bool
+  , updateTakeProfitPercent :: Maybe Scientific
+  , updateRebalanceEnabled :: Maybe Bool
+  , updateMinRebalanceImprovement :: Maybe Scientific
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -80,6 +92,14 @@ data UpdateOKXCredentialsRequest = UpdateOKXCredentialsRequest
   , okxReqApiSecret :: Text
   , okxReqPassphrase :: Text
   , okxReqIsDemo :: Bool
+  } deriving stock (Eq, Show, Generic)
+  deriving anyclass (FromJSON, ToJSON)
+
+-- Bybit Credentials
+data UpdateBybitCredentialsRequest = UpdateBybitCredentialsRequest
+  { bybitReqApiKey :: Text
+  , bybitReqApiSecret :: Text
+  , bybitReqTestnet :: Bool
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
@@ -143,6 +163,7 @@ settingsServer =
   :<|> updateSettingsHandler 
   :<|> updateOKXCredentialsHandler
   :<|> updateTBankCredentialsHandler
+  :<|> updateBybitCredentialsHandler
   :<|> getTBankSandboxAccountsHandler
   :<|> saveTBankSandboxAccountHandler
   :<|> setDefaultTBankSandboxAccountHandler
@@ -159,7 +180,7 @@ settingsServer =
     getSettingsHandler mAuthHeader = do
       mUid <- resolveUser mAuthHeader
       case mUid of
-        Nothing -> pure $ errorSettingsResponse "Unauthorized"
+        Nothing -> pure $ errorSettingsResponse
         Just uid -> do
           settings <- getSettings uid
           pure $ toSettingsResponse settings
@@ -168,15 +189,19 @@ settingsServer =
     updateSettingsHandler mAuthHeader req = do
       mUid <- resolveUser mAuthHeader
       case mUid of
-        Nothing -> pure $ errorSettingsResponse "Unauthorized"
+        Nothing -> pure $ errorSettingsResponse
         Just uid -> do
           currentSettings <- getSettings uid
-          let newSettings = currentSettings
+          let oldRisk = DS.settingsRiskParams currentSettings
+              newSettings = currentSettings
                 { DS.settingsRiskParams = DS.RiskParameters
                   { DS.riskMaxLossPercent = updateMaxLossPercent req
                   , DS.riskMaxPositionSize = updateMaxPositionSize req
                   , DS.riskMaxOpenPositions = updateMaxOpenPositions req
                   , DS.riskAutoModeEnabled = updateAutoModeEnabled req
+                  , DS.riskTakeProfitPercent = fromMaybe (DS.riskTakeProfitPercent oldRisk) (updateTakeProfitPercent req)
+                  , DS.riskRebalanceEnabled = fromMaybe (DS.riskRebalanceEnabled oldRisk) (updateRebalanceEnabled req)
+                  , DS.riskMinRebalanceImprovement = fromMaybe (DS.riskMinRebalanceImprovement oldRisk) (updateMinRebalanceImprovement req)
                   }
                 }
           _updatedSettings <- updateSettings uid newSettings
@@ -200,6 +225,25 @@ settingsServer =
             { credSuccess = success
             , credError = if success then Nothing else Just "Failed to save OKX credentials"
             , credMessage = Just "OKX credentials saved successfully"
+            }
+
+    -- POST /settings/credentials/bybit
+    updateBybitCredentialsHandler mAuthHeader req = do
+      mUid <- resolveUser mAuthHeader
+      case mUid of
+        Nothing -> pure $ CredentialsResponse False (Just "Unauthorized") Nothing
+        Just uid -> do
+          let creds = DS.BybitCredentials
+                { DS.bybitApiKeyId = ApiKeyId $ read "00000000-0000-0000-0000-000000000001"
+                , DS.bybitApiKey = bybitReqApiKey req
+                , DS.bybitApiSecret = bybitReqApiSecret req
+                , DS.bybitTestnet = bybitReqTestnet req
+                }
+          success <- saveBybitCredentials uid creds
+          pure $ CredentialsResponse
+            { credSuccess = success
+            , credError = if success then Nothing else Just "Failed to save Bybit credentials"
+            , credMessage = Just "Bybit credentials saved successfully"
             }
 
     -- POST /settings/credentials/tbank
@@ -281,7 +325,7 @@ settingsServer =
     setBrokerHandler mAuthHeader req = do
       mUid <- resolveUser mAuthHeader
       case mUid of
-        Nothing -> pure $ errorSettingsResponse "Unauthorized"
+        Nothing -> pure $ errorSettingsResponse
         Just uid -> do
           _ <- setSelectedBroker uid (sbrBroker req)
           _ <- setUseSandbox uid (sbrUseSandbox req)
@@ -307,21 +351,31 @@ settingsServer =
               , bcrMode = mode
               , bcrIsConfigured = True
               }
+            Just (BybitConfig _ _ testnet) -> pure $ Just $ BrokerConfigResponse
+              { bcrBroker = Bybit
+              , bcrMode = if testnet then Sandbox else Real
+              , bcrIsConfigured = True
+              }
             Nothing -> pure Nothing
 
-    -- Helper for unauthorized settings responses
-    errorSettingsResponse _msg = SettingsResponse
+    errorSettingsResponse :: SettingsResponse
+    errorSettingsResponse = SettingsResponse
       { settingsRiskMaxLossPercent = 0
       , settingsRiskMaxPositionSize = 0
       , settingsRiskMaxOpenPositions = 0
       , settingsRiskAutoModeEnabled = False
+      , settingsRiskTakeProfitPercent = 50
+      , settingsRiskRebalanceEnabled = True
+      , settingsRiskMinRebalanceImprovement = 0.10
       , settingsSelectedBroker = DS.BrokerNone
       , settingsUseSandbox = True
       , settingsHasOKXCredentials = False
       , settingsHasTBankSandboxToken = False
       , settingsHasTBankRealToken = False
       , settingsTBankRealTradingEnabled = False
+      , settingsHasBybitCredentials = False
       , settingsHasActiveBroker = False
+      , settingsSupportedBybitCoins = DS.supportedBybitOptionCoins
       }
 
     toSettingsResponse :: DS.Settings -> SettingsResponse
@@ -330,6 +384,9 @@ settingsServer =
       , settingsRiskMaxPositionSize = DS.riskMaxPositionSize $ DS.settingsRiskParams settings
       , settingsRiskMaxOpenPositions = DS.riskMaxOpenPositions $ DS.settingsRiskParams settings
       , settingsRiskAutoModeEnabled = DS.riskAutoModeEnabled $ DS.settingsRiskParams settings
+      , settingsRiskTakeProfitPercent = DS.riskTakeProfitPercent $ DS.settingsRiskParams settings
+      , settingsRiskRebalanceEnabled = DS.riskRebalanceEnabled $ DS.settingsRiskParams settings
+      , settingsRiskMinRebalanceImprovement = DS.riskMinRebalanceImprovement $ DS.settingsRiskParams settings
       , settingsSelectedBroker = DS.bpSelectedBroker $ DS.settingsBrokerPreference settings
       , settingsUseSandbox = DS.bpUseSandbox $ DS.settingsBrokerPreference settings
       , settingsHasOKXCredentials = case DS.settingsOKXCredentials settings of
@@ -344,5 +401,9 @@ settingsServer =
       , settingsTBankRealTradingEnabled = case DS.settingsTBankCredentials settings of
           Just creds -> DS.tbankRealTradingEnabled creds
           Nothing -> False
+      , settingsHasBybitCredentials = case DS.settingsBybitCredentials settings of
+          Just _ -> True
+          Nothing -> False
       , settingsHasActiveBroker = DS.hasActiveBroker settings
+      , settingsSupportedBybitCoins = DS.supportedBybitOptionCoins
       }

@@ -59,6 +59,7 @@ export enum PositionStatus {
 export enum Broker {
   OKX = 'OKX',
   TBank = 'TBank',
+  Bybit = 'Bybit',
 }
 
 export enum BrokerMode {
@@ -69,6 +70,7 @@ export enum BrokerMode {
 export enum SelectedBroker {
   BrokerOKX = 'BrokerOKX',
   BrokerTBank = 'BrokerTBank',
+  BrokerBybit = 'BrokerBybit',
   BrokerNone = 'BrokerNone',
 }
 
@@ -206,6 +208,9 @@ export interface RiskParameters {
   riskMaxPositionSize: number;
   riskMaxOpenPositions: number;
   riskAutoModeEnabled: boolean;
+  riskTakeProfitPercent: number;
+  riskRebalanceEnabled: boolean;
+  riskMinRebalanceImprovement: number;
 }
 
 export interface Settings {
@@ -213,7 +218,14 @@ export interface Settings {
   settingsBrokerPreference: BrokerPreference;
   settingsOKXCredentials: OKXCredentials | null;
   settingsTBankCredentials: TBankCredentials | null;
+  settingsBybitCredentials: BybitCredentials | null;
   settingsRiskParams: RiskParameters;
+}
+
+export interface BybitCredentials {
+  bybitApiKey: string;
+  bybitApiSecret: string;
+  bybitTestnet: boolean;
 }
 
 // API Response version (credentials masked)
@@ -222,13 +234,18 @@ export interface SettingsResponse {
   settingsRiskMaxPositionSize: number;
   settingsRiskMaxOpenPositions: number;
   settingsRiskAutoModeEnabled: boolean;
+  settingsRiskTakeProfitPercent: number;
+  settingsRiskRebalanceEnabled: boolean;
+  settingsRiskMinRebalanceImprovement: number;
   settingsSelectedBroker: SelectedBroker;
   settingsUseSandbox: boolean;
   settingsHasOKXCredentials: boolean;
   settingsHasTBankSandboxToken: boolean;
   settingsHasTBankRealToken: boolean;
   settingsTBankRealTradingEnabled: boolean;
+  settingsHasBybitCredentials: boolean;
   settingsHasActiveBroker: boolean;
+  settingsSupportedBybitCoins: string[];
 }
 
 // ============================================================================
@@ -240,6 +257,9 @@ export interface UpdateSettingsRequest {
   updateMaxPositionSize: number;
   updateMaxOpenPositions: number;
   updateAutoModeEnabled: boolean;
+  updateTakeProfitPercent?: number;
+  updateRebalanceEnabled?: boolean;
+  updateMinRebalanceImprovement?: number;
 }
 
 export interface UpdateOKXCredentialsRequest {
@@ -247,6 +267,12 @@ export interface UpdateOKXCredentialsRequest {
   okxApiSecret: string;
   okxPassphrase: string;
   okxIsDemo: boolean;
+}
+
+export interface UpdateBybitCredentialsRequest {
+  bybitReqApiKey: string;
+  bybitReqApiSecret: string;
+  bybitReqTestnet: boolean;
 }
 
 export interface UpdateTBankCredentialsRequest {
@@ -414,6 +440,13 @@ export interface StrategyType {
   contents?: string;
 }
 
+export interface StrategyOpenLeg {
+  sliInstrumentId: string;
+  sliSide: string;
+  sliQuantity: number;
+  sliLimitPrice: number | null;
+}
+
 export interface Strategy {
   strategyId: StrategyId;
   strategyType: StrategyType | string;
@@ -421,6 +454,7 @@ export interface Strategy {
   strategyDescription: string;
   strategyUnderlying: string;
   strategyLegs: OptionLeg[];
+  strategyOpenLegs?: StrategyOpenLeg[];
   strategyGreeks: Greeks;
   strategyMetrics: StrategyMetrics;
   strategyNetPremium: number;
@@ -441,7 +475,8 @@ export interface Strategy {
 
 export interface PositionLeg {
   posLegOrderId: OrderId;
-  posLegSide: Side;
+  posLegInstrumentId: string;
+  posLegSide: Side | string;
   posLegQuantity: Quantity;
   posLegFilledPrice: Price;
   posLegFilledAt: string;
@@ -449,16 +484,33 @@ export interface PositionLeg {
 
 export interface Position {
   positionId: PositionId;
-  positionStrategyId: StrategyId;
-  positionStatus: PositionStatus;
+  positionStrategyId?: StrategyId;
+  positionStatus: PositionStatus | string;
   positionLegs: PositionLeg[];
   positionGreeks: Greeks | null;
   positionRealizedPL: number | null;
   positionUnrealizedPL: number | null;
   positionMarginUsed: number;
+  positionMaxProfit?: number | null;
+  positionMaxLoss?: number | null;
   positionOpenedAt: string | null;
   positionClosedAt: string | null;
-  positionNotes: string | null;
+  positionNotes?: string | null;
+}
+
+export interface OpenPositionRequest {
+  oprStrategyId: StrategyId;
+  oprUnderlying: string;
+  oprLegs: {
+    olrInstrumentId: string;
+    olrSide: string;
+    olrQuantity: number;
+    olrLimitPrice: number | null;
+  }[];
+  oprMaxProfit: number | null;
+  oprMaxLoss: number | null;
+  oprEntryPremium: number | null;
+  oprMargin: number;
 }
 
 // ============================================================================

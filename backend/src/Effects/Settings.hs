@@ -2,32 +2,27 @@
 {-# LANGUAGE TypeApplications #-}
 
 module Effects.Settings
-  ( -- * Settings Effect
-    SettingsEffect (..)
-    -- * General Settings
+  ( SettingsEffect (..)
   , getSettings
   , updateSettings
-    -- * OKX Credentials
   , saveOKXCredentials
   , getOKXCredentials
   , deleteOKXCredentials
-    -- * T-Bank Credentials
   , saveTBankCredentials
   , getTBankCredentials
   , deleteTBankCredentials
-    -- * T-Bank Sandbox Management
+  , saveBybitCredentials
+  , getBybitCredentials
+  , deleteBybitCredentials
   , saveTBankSandboxToken
   , saveTBankSandboxAccount
   , getTBankSandboxAccounts
   , setDefaultTBankSandboxAccount
   , enableTBankRealTrading
-    -- * Broker Selection
   , setSelectedBroker
   , setUseSandbox
-    -- * Interpreters
   , runSettingsWithPool
   , runSettingsIO
-    -- * Database initialization
   , initializeDatabase
   ) where
 
@@ -36,101 +31,135 @@ import qualified Data.Text as Text
 import Database.Persist.Sql (ConnectionPool, Entity(..))
 import Domain.Settings
   ( BrokerPreference (..)
+  , BybitCredentials (..)
   , OKXCredentials (..)
   , RiskParameters (..)
   , SelectedBroker (..)
   , Settings (..)
   , TBankCredentials (..)
   , TBankSandboxInfo (..)
+  , defaultRiskParams
   , defaultSettings
   )
 import Domain.Types (UserId (..))
-import Infrastructure.Encryption (EncryptionContext, initializeEncryption, encryptCredential, decryptCredential)
+import Infrastructure.Encryption (EncryptionContext)
 import Infrastructure.Persistence (initializeDatabase, getUserSettings, saveUserSettings, UserSettings(..))
 import qualified Infrastructure.Persistence as Persistence
 import Polysemy
 import Polysemy.Embed
 
--- ============================================================================
--- Settings Effect Definition
--- ============================================================================
-
 data SettingsEffect m a where
-  -- General settings
   GetSettings :: UserId -> SettingsEffect m Settings
   UpdateSettings :: UserId -> Settings -> SettingsEffect m Settings
-  
-  -- OKX credentials
   SaveOKXCredentials :: UserId -> OKXCredentials -> SettingsEffect m Bool
   GetOKXCredentials :: UserId -> SettingsEffect m (Maybe OKXCredentials)
   DeleteOKXCredentials :: UserId -> SettingsEffect m Bool
-  
-  -- T-Bank credentials
   SaveTBankCredentials :: UserId -> TBankCredentials -> SettingsEffect m Bool
   GetTBankCredentials :: UserId -> SettingsEffect m (Maybe TBankCredentials)
   DeleteTBankCredentials :: UserId -> SettingsEffect m Bool
-  
-  -- T-Bank sandbox management
+  SaveBybitCredentials :: UserId -> BybitCredentials -> SettingsEffect m Bool
+  GetBybitCredentials :: UserId -> SettingsEffect m (Maybe BybitCredentials)
+  DeleteBybitCredentials :: UserId -> SettingsEffect m Bool
   SaveTBankSandboxToken :: UserId -> Text -> SettingsEffect m Bool
   SaveTBankSandboxAccount :: UserId -> TBankSandboxInfo -> SettingsEffect m Bool
   GetTBankSandboxAccounts :: UserId -> SettingsEffect m [TBankSandboxInfo]
   SetDefaultTBankSandboxAccount :: UserId -> Text -> SettingsEffect m Bool
   EnableTBankRealTrading :: UserId -> Bool -> SettingsEffect m Bool
-  
-  -- Broker selection
   SetSelectedBroker :: UserId -> SelectedBroker -> SettingsEffect m Bool
   SetUseSandbox :: UserId -> Bool -> SettingsEffect m Bool
 
 makeSem ''SettingsEffect
 
--- ============================================================================
--- IO Interpreter with Database Pool
--- ============================================================================
+riskFromEntity :: UserSettings -> RiskParameters
+riskFromEntity settings = RiskParameters
+  { riskMaxLossPercent = fromRational $ toRational $ userSettingsMaxLossPercent settings
+  , riskMaxPositionSize = fromRational $ toRational $ userSettingsMaxPositionSize settings
+  , riskMaxOpenPositions = userSettingsMaxOpenPositions settings
+  , riskAutoModeEnabled = userSettingsAutoModeEnabled settings
+  , riskTakeProfitPercent = fromRational $ toRational $ userSettingsTakeProfitPercent settings
+  , riskRebalanceEnabled = userSettingsRebalanceEnabled settings
+  , riskMinRebalanceImprovement = fromRational $ toRational $ userSettingsMinRebalanceImprovement settings
+  }
+
+textToSelectedBroker :: Text -> SelectedBroker
+textToSelectedBroker "okx" = BrokerOKX
+textToSelectedBroker "tbank" = BrokerTBank
+textToSelectedBroker "bybit" = BrokerBybit
+textToSelectedBroker _ = BrokerNone
+
+persistenceEntityToSettings :: Entity UserSettings -> IO Settings
+persistenceEntityToSettings (Entity _ settings) = do
+  let uid = UserId $ read $ Text.unpack $ userSettingsUserId settings
+  pure $ Settings
+    { settingsUserId = uid
+    , settingsBrokerPreference = BrokerPreference
+        { bpSelectedBroker = textToSelectedBroker $ userSettingsSelectedBroker settings
+        , bpUseSandbox = userSettingsUseSandbox settings
+        }
+    , settingsOKXCredentials = Nothing
+    , settingsTBankCredentials = Nothing
+    , settingsBybitCredentials = Nothing
+    , settingsRiskParams = riskFromEntity settings
+    }
 
 runSettingsWithPool :: Members '[Embed IO] r => ConnectionPool -> EncryptionContext -> Sem (SettingsEffect ': r) a -> Sem r a
 runSettingsWithPool pool encCtx = interpret $ \case
-  -- General settings
   GetSettings uid -> embed @IO $ do
     mSettingsEntity <- Persistence.getUserSettings pool uid
-    case mSettingsEntity of
+    mOkx <- Persistence.getOKXCredentials pool encCtx uid
+    mTbank <- Persistence.getTBankCredentials pool encCtx uid
+    mBybit <- Persistence.getBybitCredentials pool encCtx uid
+    base <- case mSettingsEntity of
       Just entity -> persistenceEntityToSettings entity
       Nothing -> pure $ defaultSettings uid
+    pure base
+      { settingsOKXCredentials = mOkx
+      , settingsTBankCredentials = mTbank
+      , settingsBybitCredentials = mBybit
+      }
 
   UpdateSettings uid newSettings -> embed @IO $ do
-    _ <- Persistence.saveUserSettings pool 
-           uid 
+    _ <- Persistence.saveUserSettings pool
+           uid
            (bpSelectedBroker $ settingsBrokerPreference newSettings)
            (bpUseSandbox $ settingsBrokerPreference newSettings)
            (settingsRiskParams newSettings)
     pure newSettings
 
-  -- OKX credentials
   SaveOKXCredentials uid creds -> embed @IO $ do
     Persistence.saveOKXCredentials pool encCtx uid creds
     pure True
 
-  GetOKXCredentials uid -> embed @IO $ do
+  GetOKXCredentials uid -> embed @IO $
     Persistence.getOKXCredentials pool encCtx uid
 
   DeleteOKXCredentials uid -> embed @IO $ do
     Persistence.deleteOKXCredentials pool uid
     pure True
 
-  -- T-Bank credentials
   SaveTBankCredentials uid creds -> embed @IO $ do
     Persistence.saveTBankCredentials pool encCtx uid creds
     pure True
 
-  GetTBankCredentials uid -> embed @IO $ do
+  GetTBankCredentials uid -> embed @IO $
     Persistence.getTBankCredentials pool encCtx uid
 
   DeleteTBankCredentials uid -> embed @IO $ do
     Persistence.deleteTBankCredentials pool uid
     pure True
 
-  -- T-Bank sandbox management
+  SaveBybitCredentials uid creds -> embed @IO $ do
+    Persistence.saveBybitCredentials pool encCtx uid creds
+    pure True
+
+  GetBybitCredentials uid -> embed @IO $
+    Persistence.getBybitCredentials pool encCtx uid
+
+  DeleteBybitCredentials uid -> embed @IO $ do
+    Persistence.deleteBybitCredentials pool uid
+    pure True
+
   SaveTBankSandboxToken uid token -> embed @IO $ do
-    -- Get existing credentials
     mCreds <- Persistence.getTBankCredentials pool encCtx uid
     let newCreds = case mCreds of
           Just creds -> creds { tbankSandboxToken = Just token }
@@ -148,7 +177,7 @@ runSettingsWithPool pool encCtx = interpret $ \case
     Persistence.saveTBankSandboxAccount pool uid accInfo
     pure True
 
-  GetTBankSandboxAccounts uid -> embed @IO $ do
+  GetTBankSandboxAccounts uid -> embed @IO $
     Persistence.getTBankSandboxAccounts pool uid
 
   SetDefaultTBankSandboxAccount uid accountId -> embed @IO $ do
@@ -159,30 +188,18 @@ runSettingsWithPool pool encCtx = interpret $ \case
     mCreds <- Persistence.getTBankCredentials pool encCtx uid
     case mCreds of
       Just creds -> do
-        let newCreds = creds { tbankRealTradingEnabled = enabled }
-        Persistence.saveTBankCredentials pool encCtx uid newCreds
+        Persistence.saveTBankCredentials pool encCtx uid (creds { tbankRealTradingEnabled = enabled })
         pure True
       Nothing -> pure False
 
-  -- Broker selection
   SetSelectedBroker uid broker -> embed @IO $ do
     mSettingsEntity <- Persistence.getUserSettings pool uid
     case mSettingsEntity of
       Just (Entity _ settings) -> do
-        let currentBroker = userSettingsSelectedBroker settings
-            currentUseSandbox = userSettingsUseSandbox settings
-            riskParams = RiskParameters
-              { riskMaxLossPercent = fromRational $ toRational $ userSettingsMaxLossPercent settings
-              , riskMaxPositionSize = fromRational $ toRational $ userSettingsMaxPositionSize settings
-              , riskMaxOpenPositions = userSettingsMaxOpenPositions settings
-              , riskAutoModeEnabled = userSettingsAutoModeEnabled settings
-              }
-        _ <- Persistence.saveUserSettings pool uid broker currentUseSandbox riskParams
+        _ <- Persistence.saveUserSettings pool uid broker (userSettingsUseSandbox settings) (riskFromEntity settings)
         pure True
       Nothing -> do
-        -- Create new settings
-        let riskParams = RiskParameters 2.0 1000.0 5 False
-        _ <- Persistence.saveUserSettings pool uid broker True riskParams
+        _ <- Persistence.saveUserSettings pool uid broker True defaultRiskParams
         pure True
 
   SetUseSandbox uid useSandbox -> embed @IO $ do
@@ -190,53 +207,26 @@ runSettingsWithPool pool encCtx = interpret $ \case
     case mSettingsEntity of
       Just (Entity _ settings) -> do
         let currentBroker = textToSelectedBroker $ userSettingsSelectedBroker settings
-            riskParams = RiskParameters
-              { riskMaxLossPercent = fromRational $ toRational $ userSettingsMaxLossPercent settings
-              , riskMaxPositionSize = fromRational $ toRational $ userSettingsMaxPositionSize settings
-              , riskMaxOpenPositions = userSettingsMaxOpenPositions settings
-              , riskAutoModeEnabled = userSettingsAutoModeEnabled settings
-              }
-        _ <- Persistence.saveUserSettings pool uid currentBroker useSandbox riskParams
+        _ <- Persistence.saveUserSettings pool uid currentBroker useSandbox (riskFromEntity settings)
         pure True
       Nothing -> pure True
-  where
-    persistenceEntityToSettings (Entity _ settings) = pure $ Settings
-      { settingsUserId = UserId $ read $ Text.unpack $ userSettingsUserId settings
-      , settingsBrokerPreference = BrokerPreference
-          { bpSelectedBroker = textToSelectedBroker $ userSettingsSelectedBroker settings
-          , bpUseSandbox = userSettingsUseSandbox settings
-          }
-      , settingsOKXCredentials = Nothing  -- Will be fetched separately
-      , settingsTBankCredentials = Nothing  -- Will be fetched separately
-      , settingsRiskParams = RiskParameters
-          { riskMaxLossPercent = fromRational $ toRational $ userSettingsMaxLossPercent settings
-          , riskMaxPositionSize = fromRational $ toRational $ userSettingsMaxPositionSize settings
-          , riskMaxOpenPositions = userSettingsMaxOpenPositions settings
-          , riskAutoModeEnabled = userSettingsAutoModeEnabled settings
-          }
-      }
-    
-    textToSelectedBroker "okx" = BrokerOKX
-    textToSelectedBroker "tbank" = BrokerTBank
-    textToSelectedBroker _ = BrokerNone
-
--- ============================================================================
--- Legacy IO Interpreter (without database - for testing/development)
--- ============================================================================
 
 runSettingsIO :: Members '[Embed IO] r => Sem (SettingsEffect ': r) a -> Sem r a
 runSettingsIO = interpret $ \case
   GetSettings uid -> embed @IO $ pure $ defaultSettings uid
   UpdateSettings _ newSettings -> embed @IO $ pure newSettings
   SaveOKXCredentials _ _ -> embed @IO $ pure True
-  GetOKXCredentials _ -> embed @IO $ pure (Nothing :: Maybe OKXCredentials)
+  GetOKXCredentials _ -> embed @IO $ pure Nothing
   DeleteOKXCredentials _ -> embed @IO $ pure True
   SaveTBankCredentials _ _ -> embed @IO $ pure True
-  GetTBankCredentials _ -> embed @IO $ pure (Nothing :: Maybe TBankCredentials)
+  GetTBankCredentials _ -> embed @IO $ pure Nothing
   DeleteTBankCredentials _ -> embed @IO $ pure True
+  SaveBybitCredentials _ _ -> embed @IO $ pure True
+  GetBybitCredentials _ -> embed @IO $ pure Nothing
+  DeleteBybitCredentials _ -> embed @IO $ pure True
   SaveTBankSandboxToken _ _ -> embed @IO $ pure True
   SaveTBankSandboxAccount _ _ -> embed @IO $ pure True
-  GetTBankSandboxAccounts _ -> embed @IO $ pure ([] :: [TBankSandboxInfo])
+  GetTBankSandboxAccounts _ -> embed @IO $ pure []
   SetDefaultTBankSandboxAccount _ _ -> embed @IO $ pure True
   EnableTBankRealTrading _ _ -> embed @IO $ pure True
   SetSelectedBroker _ _ -> embed @IO $ pure True

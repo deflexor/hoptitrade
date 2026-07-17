@@ -1,29 +1,22 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TemplateHaskell #-}
 
 module Effects.Broker
-  ( -- * Broker Effect
-    BrokerEffect (..)
-    -- * Order Operations
+  ( BrokerEffect (..)
   , placeOrder
   , cancelOrder
   , getOrderState
   , getOrders
-    -- * Position Operations
   , getPositions
   , getPortfolio
-    -- * Market Data
   , getOrderBook
   , getInstruments
   , getLastPrice
-    -- * Broker Management
   , authenticate
   , getConnectionStatus
-    -- * MOEX-specific Operations
   , getTradingStatus
   , checkLiquidity
-    -- * Interpreters
   , runBrokerIO
-    -- * Types
   , PriceLevel (..)
   , InstrumentInfo (..)
   , InstrumentType (..)
@@ -31,6 +24,7 @@ module Effects.Broker
 
 import Data.Scientific (Scientific)
 import Data.Text (Text)
+import qualified Data.Text as Text
 import qualified Data.Time
 import Domain.Broker
   ( BrokerConfig (..)
@@ -42,11 +36,11 @@ import Domain.Broker
   , BrokerMode (..)
   , PriceLevel (..)
   , defaultLiquidityThreshold
-  , isMarketOpen
   )
 import Domain.Order (CancelRequest (..), OrderRequest (..), OrderResponse (..), OrderType (..))
 import Domain.Position (Position)
-import Domain.Types (InstrumentId (..), OrderId (..), PositionId (..), Quantity, Side (..), OrderStatus (..))
+import Domain.Types (InstrumentId (..), OrderId (..), OrderStatus (..), Quantity, Side (..))
+import qualified Infrastructure.Broker.Bybit as Bybit
 import qualified Infrastructure.Broker.OKX as OKX
 import qualified Infrastructure.Broker.TBank as TBank
 import qualified Infrastructure.Broker.TBank.MarketData as MarketData
@@ -54,11 +48,6 @@ import qualified Infrastructure.Broker.TBank.Sandbox as TBankSandbox
 import Polysemy
 import Polysemy.Embed
 
--- ============================================================================
--- Instrument Info
--- ============================================================================
-
--- | Generic instrument information across exchanges
 data InstrumentInfo = InstrumentInfo
   { iiInstrumentId :: InstrumentId
   , iiTicker :: Text
@@ -82,237 +71,209 @@ data InstrumentType
   | CryptoOption
   deriving stock (Eq, Show)
 
--- ============================================================================
--- Broker Effect Definition
--- ============================================================================
-
--- | Abstract broker effect supporting multiple exchanges (OKX, T-Bank)
--- Each operation takes a BrokerConfig to determine which exchange to use
--- and whether to use sandbox or real trading.
 data BrokerEffect m a where
-  -- Order operations
   PlaceOrder :: BrokerConfig -> OrderRequest -> BrokerEffect m OrderResponse
   CancelOrder :: BrokerConfig -> CancelRequest -> BrokerEffect m Bool
   GetOrderState :: BrokerConfig -> OrderId -> BrokerEffect m (Maybe OrderResponse)
   GetOrders :: BrokerConfig -> BrokerEffect m [OrderResponse]
-
-  -- Position operations
   GetPositions :: BrokerConfig -> BrokerEffect m [Position]
   GetPortfolio :: BrokerConfig -> BrokerEffect m [(InstrumentId, Quantity)]
-
-  -- Market data operations
   GetOrderBook :: BrokerConfig -> InstrumentId -> Int -> BrokerEffect m (Maybe ([PriceLevel], [PriceLevel]))
   GetInstruments :: BrokerConfig -> Text -> BrokerEffect m [InstrumentInfo]
   GetLastPrice :: BrokerConfig -> InstrumentId -> BrokerEffect m (Maybe Scientific)
-
-  -- Broker management
   Authenticate :: BrokerConfig -> BrokerEffect m Bool
   GetConnectionStatus :: BrokerConfig -> BrokerEffect m BrokerConnectionStatus
-
-  -- MOEX-specific: Trading status and liquidity
   GetTradingStatus :: BrokerConfig -> InstrumentId -> BrokerEffect m TradingStatus
   CheckLiquidity :: BrokerConfig -> InstrumentId -> Quantity -> Side -> BrokerEffect m LiquidityAssessment
 
 makeSem ''BrokerEffect
 
--- ============================================================================
--- IO Interpreter (Production)
--- ============================================================================
+logBrokerErr :: Show e => Text -> e -> IO ()
+logBrokerErr prefix err = putStrLn $ Text.unpack prefix <> ": " <> show err
 
--- | The IO interpreter dispatches to the appropriate exchange implementation
--- based on the BrokerConfig type.
+failedOrder :: Text -> IO OrderResponse
+failedOrder msg = do
+  now <- Data.Time.getCurrentTime
+  pure OrderResponse
+    { orderResponseOrderId = OrderId "failed"
+    , orderResponseClientOrderId = Nothing
+    , orderResponseStatus = OrderFailed msg
+    , orderResponseFilledQty = 0
+    , orderResponseAvgPrice = Nothing
+    , orderResponseTimestamp = now
+    }
+
 runBrokerIO :: Members '[Embed IO] r => Sem (BrokerEffect ': r) a -> Sem r a
 runBrokerIO = interpret $ \case
-  -- Order operations
-  PlaceOrder config@OKXConfig{} req -> embed $ do
+  PlaceOrder config@OKXConfig{} req -> embed @IO $ do
     putStrLn "Broker: Placing order via OKX"
     result <- OKX.placeOrderOKX config req
     case result of
-      Left err -> error $ "OKX Error: " <> show err  -- TODO: Proper error handling
+      Left err -> logBrokerErr "OKX Error" err >> failedOrder (Text.pack $ show err)
       Right resp -> pure resp
 
-  PlaceOrder config@TBankConfig{tbankMode = Sandbox} req -> embed $ do
+  PlaceOrder config@TBankConfig{tbankMode = Sandbox} req -> embed @IO $ do
     putStrLn "Broker: Placing order via T-Bank Sandbox"
     case tbankAccountId config of
-      Nothing -> error "T-Bank Sandbox requires accountId"
+      Nothing -> failedOrder "T-Bank Sandbox requires accountId"
       Just accId -> do
         result <- TBankSandbox.postSandboxOrder (tbankToken config) accId req
         case result of
-          Left err -> error $ "T-Bank Error: " <> show err
+          Left err -> logBrokerErr "T-Bank Error" err >> failedOrder (Text.pack $ show err)
           Right resp -> pure resp
 
-  PlaceOrder config@TBankConfig{tbankMode = Real} req -> embed $ do
+  PlaceOrder config@TBankConfig{tbankMode = Real} req -> embed @IO $ do
     putStrLn "Broker: Placing order via T-Bank (REAL MONEY!)"
-    putStrLn "WARNING: This will use real funds!"
     case tbankAccountId config of
-      Nothing -> error "T-Bank Real trading requires accountId"
+      Nothing -> failedOrder "T-Bank Real trading requires accountId"
       Just accId -> do
         result <- TBank.postOrder (tbankToken config) accId req
         case result of
-          Left err -> error $ "T-Bank Error: " <> show err
+          Left err -> logBrokerErr "T-Bank Error" err >> failedOrder (Text.pack $ show err)
           Right resp -> pure resp
 
-  CancelOrder config@OKXConfig{} req -> embed $ do
-    putStrLn "Broker: Cancelling order via OKX"
+  PlaceOrder config@BybitConfig{} req -> embed @IO $ do
+    putStrLn "Broker: Placing order via Bybit"
+    result <- Bybit.placeOrderBybit config req False
+    case result of
+      Left err -> logBrokerErr "Bybit Error" err >> failedOrder (Text.pack $ show err)
+      Right resp -> pure resp
+
+  CancelOrder config@OKXConfig{} req -> embed @IO $ do
     result <- OKX.cancelOrderOKX config req
     case result of
-      Left err -> error $ "OKX Error: " <> show err
+      Left err -> logBrokerErr "OKX Error" err >> pure False
       Right success -> pure success
 
-  CancelOrder config@TBankConfig{} req -> embed $ do
-    putStrLn "Broker: Cancelling order via T-Bank"
+  CancelOrder config@TBankConfig{} req -> embed @IO $ do
     case tbankAccountId config of
-      Nothing -> error "T-Bank requires accountId for order cancellation"
+      Nothing -> pure False
       Just accId -> do
         result <- TBank.cancelOrder (tbankToken config) accId (cancelRequestOrderId req)
         case result of
-          Left err -> error $ "T-Bank Error: " <> show err
+          Left err -> logBrokerErr "T-Bank Error" err >> pure False
           Right success -> pure success
 
-  GetOrderState config@OKXConfig{} orderId -> embed $ do
-    putStrLn "Broker: Getting order state via OKX"
-    -- TODO: Implement OKX.getOrderState
-    pure Nothing
+  CancelOrder config@BybitConfig{} req -> embed @IO $ do
+    result <- Bybit.cancelOrderBybit config req ""
+    case result of
+      Left err -> logBrokerErr "Bybit Error" err >> pure False
+      Right success -> pure success
 
-  GetOrderState config@TBankConfig{} orderId -> embed $ do
-    putStrLn "Broker: Getting order state via T-Bank"
+  GetOrderState OKXConfig{} _ -> embed @IO $ pure Nothing
+  GetOrderState config@TBankConfig{} orderId -> embed @IO $
     case tbankAccountId config of
-      Nothing -> error "T-Bank requires accountId for order state query"
+      Nothing -> pure Nothing
       Just accId -> do
         result <- TBank.getOrderState (tbankToken config) accId orderId
         case result of
-          Left err -> error $ "T-Bank Error: " <> show err
+          Left err -> logBrokerErr "T-Bank Error" err >> pure Nothing
           Right mResp -> pure mResp
+  GetOrderState BybitConfig{} _ -> embed @IO $ pure Nothing
 
-  GetOrders config -> embed $ do
-    putStrLn "Broker: Getting orders"
-    -- TODO: Implement per-exchange order listing
-    pure []
+  GetOrders _ -> embed @IO $ pure []
 
-  -- Position operations
-  GetPositions config -> embed $ do
-    putStrLn "Broker: Getting positions"
-    -- TODO: Implement per-exchange position query
-    pure []
+  GetPositions _ -> embed @IO $ pure []
 
-  GetPortfolio config@OKXConfig{} -> embed $ do
-    putStrLn "Broker: Getting portfolio via OKX"
-    -- TODO: Implement OKX portfolio query
-    pure []
-
-  GetPortfolio config@TBankConfig{tbankMode = Sandbox} -> embed $ do
-    putStrLn "Broker: Getting portfolio via T-Bank Sandbox"
+  GetPortfolio OKXConfig{} -> embed @IO $ pure []
+  GetPortfolio config@TBankConfig{tbankMode = Sandbox} -> embed @IO $
     case tbankAccountId config of
       Nothing -> pure []
       Just accId -> do
         result <- TBankSandbox.getSandboxPortfolio (tbankToken config) accId TBankSandbox.RUB
         case result of
-          Left err -> error $ "T-Bank Error: " <> show err
+          Left err -> logBrokerErr "T-Bank Error" err >> pure []
           Right portfolio -> pure $ map extractPortfolioPosition portfolio
+  GetPortfolio TBankConfig{} -> embed @IO $ pure []
+  GetPortfolio BybitConfig{} -> embed @IO $ pure []
 
-  GetPortfolio config@TBankConfig{tbankMode = Real} -> embed $ do
-    putStrLn "Broker: Getting portfolio via T-Bank Real"
-    -- TODO: Implement T-Bank real portfolio query
-    pure []
-
-  -- Market data operations
-  GetOrderBook config@OKXConfig{} instId depth -> embed $ do
-    putStrLn "Broker: Getting order book via OKX"
+  GetOrderBook config@OKXConfig{} instId depth -> embed @IO $ do
     result <- OKX.getOrderBookOKX config instId depth
     case result of
-      Left err -> error $ "OKX Error: " <> show err
+      Left err -> logBrokerErr "OKX Error" err >> pure Nothing
       Right mBook -> pure mBook
-
-  GetOrderBook config@TBankConfig{} instId depth -> embed $ do
-    putStrLn "Broker: Getting order book via T-Bank"
+  GetOrderBook config@TBankConfig{} instId depth -> embed @IO $ do
     result <- TBank.getOrderBook (tbankToken config) instId depth
     case result of
-      Left err -> error $ "T-Bank Error: " <> show err
+      Left err -> logBrokerErr "T-Bank Error" err >> pure Nothing
       Right (bids, asks) -> pure $ Just (bids, asks)
+  GetOrderBook BybitConfig{} _ _ -> embed @IO $ pure Nothing
 
-  GetInstruments config@OKXConfig{} underlying -> embed $ do
-    putStrLn "Broker: Getting instruments via OKX"
+  GetInstruments config@OKXConfig{} underlying -> embed @IO $ do
     result <- OKX.getInstrumentsOKX config underlying
     case result of
-      Left err -> error $ "OKX Error: " <> show err
-      Right _instruments -> pure []  -- TODO: Map OKXInstrument to InstrumentInfo
+      Left err -> logBrokerErr "OKX Error" err >> pure []
+      Right _ -> pure []
+  GetInstruments TBankConfig{} _ -> embed @IO $ pure []
+  GetInstruments config@BybitConfig{} baseCoin -> embed @IO $ do
+    result <- Bybit.getInstrumentsBybit config baseCoin
+    case result of
+      Left err -> logBrokerErr "Bybit Error" err >> pure []
+      Right instruments -> pure $ map bybitToInfo instruments
 
-  GetInstruments config@TBankConfig{} underlying -> embed $ do
-    putStrLn "Broker: Getting instruments via T-Bank"
-    -- TODO: Implement T-Bank instrument listing
-    pure []
+  GetLastPrice _ _ -> embed @IO $ pure Nothing
 
-  GetLastPrice config@OKXConfig{} instId -> embed $ do
-    putStrLn "Broker: Getting last price via OKX"
-    -- TODO: Implement OKX price query
-    pure Nothing
+  Authenticate OKXConfig{} -> embed @IO $ pure True
+  Authenticate TBankConfig{} -> embed @IO $ pure True
+  Authenticate BybitConfig{} -> embed @IO $ pure True
 
-  GetLastPrice config@TBankConfig{} instId -> embed $ do
-    putStrLn "Broker: Getting last price via T-Bank"
-    -- TODO: Implement T-Bank price query
-    pure Nothing
+  GetConnectionStatus _ -> embed @IO $ pure Disconnected
 
-  -- Broker management
-  Authenticate config@OKXConfig{} -> embed $ do
-    putStrLn "Broker: Authenticating with OKX"
-    -- TODO: Implement OKX authentication
-    pure True
-
-  Authenticate config@TBankConfig{} -> embed $ do
-    putStrLn "Broker: Authenticating with T-Bank"
-    -- TODO: Validate token with T-Bank
-    pure True
-
-  GetConnectionStatus config -> embed $ do
-    putStrLn "Broker: Getting connection status"
-    -- TODO: Implement per-exchange connection check
-    pure Disconnected
-
-  -- MOEX-specific operations
-  GetTradingStatus config@OKXConfig{} instId -> embed $ do
-    putStrLn "Broker: Getting trading status via OKX (always open)"
-    -- OKX crypto markets are always open
-    pure Trading
-
-  GetTradingStatus config@TBankConfig{} instId -> embed $ do
-    putStrLn "Broker: Getting trading status via T-Bank"
+  GetTradingStatus OKXConfig{} _ -> embed @IO $ pure Trading
+  GetTradingStatus BybitConfig{} _ -> embed @IO $ pure Trading
+  GetTradingStatus config@TBankConfig{} instId -> embed @IO $ do
     result <- TBank.getTradingStatus (tbankToken config) instId
     case result of
-      Left err -> error $ "T-Bank Error: " <> show err
+      Left err -> logBrokerErr "T-Bank Error" err >> pure NotAvailable
       Right status -> pure status
 
-  CheckLiquidity config@OKXConfig{} instId qty side -> embed $ do
-    putStrLn "Broker: Checking liquidity via OKX"
-    -- OKX generally has good liquidity, but still check
+  CheckLiquidity OKXConfig{} instId qty _side -> embed @IO $ do
     currentTime <- Data.Time.getCurrentTime
-    pure $ LiquidityAssessment
-      { laInstrumentId = instId
-      , laTimestamp = currentTime
-      , laBidVolume = 0  -- TODO: Query actual order book
-      , laAskVolume = 0
-      , laSpreadPercent = 0
-      , laSlippageEstimate = SlippageEstimate
-          { seForQuantity = qty
-          , seExpectedSlippage = 0.001  -- 0.1% for liquid crypto
-          , seMaxSlippage = 0.005       -- 0.5% worst case
-          , seConfidence = HighConfidence
-          }
-      , laIsLiquid = True
-      }
-
-  CheckLiquidity config@TBankConfig{} instId qty side -> embed $ do
-    putStrLn "Broker: Checking liquidity via T-Bank (CRITICAL for MOEX)"
+    pure $ defaultLiq instId qty currentTime 0.001 0.005
+  CheckLiquidity BybitConfig{} instId qty _side -> embed @IO $ do
+    currentTime <- Data.Time.getCurrentTime
+    pure $ defaultLiq instId qty currentTime 0.002 0.01
+  CheckLiquidity config@TBankConfig{} instId qty side -> embed @IO $ do
     result <- TBank.checkLiquidity (tbankToken config) instId qty side defaultLiquidityThreshold
     case result of
       MarketData.LiquidityOK assessment -> pure assessment
-      MarketData.LiquidityWarning assessment _warn -> pure assessment
+      MarketData.LiquidityWarning assessment _ -> pure assessment
       MarketData.LiquidityCritical assessment -> pure assessment
 
--- ============================================================================
--- Helper Functions
--- ============================================================================
+defaultLiq :: InstrumentId -> Quantity -> Data.Time.UTCTime -> Scientific -> Scientific -> LiquidityAssessment
+defaultLiq instId qty currentTime expected maxSlip = LiquidityAssessment
+  { laInstrumentId = instId
+  , laTimestamp = currentTime
+  , laBidVolume = 0
+  , laAskVolume = 0
+  , laSpreadPercent = 0
+  , laSlippageEstimate = SlippageEstimate
+      { seForQuantity = qty
+      , seExpectedSlippage = expected
+      , seMaxSlippage = maxSlip
+      , seConfidence = HighConfidence
+      }
+  , laIsLiquid = True
+  }
 
--- | Extract (InstrumentId, Quantity) from T-Bank portfolio position
+bybitToInfo :: Bybit.BybitInstrument -> InstrumentInfo
+bybitToInfo i = InstrumentInfo
+  { iiInstrumentId = InstrumentId (Bybit.biSymbol i)
+  , iiTicker = Bybit.biSymbol i
+  , iiName = Bybit.biSymbol i
+  , iiInstrumentType = CryptoOption
+  , iiExchange = "Bybit"
+  , iiCurrency = Bybit.biSettleCoin i
+  , iiLotSize = parseQty (Bybit.biQtyStep i)
+  , iiMinQuantity = parseQty (Bybit.biMinOrderQty i)
+  , iiTickSize = parseQty (Bybit.biTickSize i)
+  , iiIsTradable = Bybit.biStatus i == "Trading"
+  }
+  where
+    parseQty t = case reads (Text.unpack t) of
+      [(n, _)] -> n
+      _ -> 0
+
 extractPortfolioPosition :: TBankSandbox.PortfolioPosition -> (InstrumentId, Quantity)
 extractPortfolioPosition pos =
   let instId = case TBankSandbox.ppFigi pos of

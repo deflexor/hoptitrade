@@ -13,8 +13,10 @@ module Effects.Position
   , recoverOpenPositions
   , runPositionWithPool
   , runPositionIO
+  , entityToPosition
   ) where
 
+import Data.Maybe (mapMaybe)
 import Data.Text (Text)
 import qualified Data.Text as Text
 import Data.Time (getCurrentTime)
@@ -23,7 +25,7 @@ import qualified Data.UUID as UUID
 import Data.UUID.V4 (nextRandom)
 import Database.Persist.Sql (ConnectionPool)
 import Domain.Position (Position (..), PositionLeg (..), PositionUpdate (..))
-import Domain.Strategy (Strategy (..))
+import Domain.Strategy (Strategy (..), StrategyMetrics (..))
 import Domain.Types (InstrumentId (..), OrderId (..), PositionId (..), PositionStatus (..), Side (..), StrategyId (..), UserId (..))
 import qualified Infrastructure.Persistence as DB
 import Polysemy
@@ -39,11 +41,6 @@ data PositionEffect m a where
 
 makeSem ''PositionEffect
 
--- ============================================================================
--- Entity-to-Domain Conversion
--- ============================================================================
-
--- | Convert a DB PositionEntity + its legs to a domain Position
 entityToPosition :: DB.PositionEntity -> [DB.PositionLegEntity] -> Maybe Position
 entityToPosition entity legs = do
   pid <- readUUID (DB.positionEntityPositionId entity)
@@ -58,66 +55,65 @@ entityToPosition entity legs = do
     , positionRealizedPL = realToFrac <$> DB.positionEntityRealizedPL entity
     , positionUnrealizedPL = realToFrac <$> DB.positionEntityUnrealizedPL entity
     , positionMarginUsed = realToFrac (DB.positionEntityMarginUsed entity)
+    , positionMaxProfit = realToFrac <$> DB.positionEntityMaxProfit entity
+    , positionMaxLoss = realToFrac <$> DB.positionEntityMaxLoss entity
+    , positionEntryPremium = realToFrac <$> DB.positionEntityEntryPremium entity
     , positionOpenedAt = DB.positionEntityOpenedAt entity
     , positionClosedAt = DB.positionEntityClosedAt entity
     , positionNotes = DB.positionEntityNotes entity
     }
 
--- | Convert a DB leg entity to domain PositionLeg
 legEntityToLeg :: DB.PositionLegEntity -> PositionLeg
 legEntityToLeg leg =
   PositionLeg
     { posLegOrderId = OrderId (DB.positionLegEntityOrderId leg)
+    , posLegInstrumentId = InstrumentId (DB.positionLegEntityInstrumentId leg)
     , posLegSide = textToSide (DB.positionLegEntitySide leg)
     , posLegQuantity = realToFrac (DB.positionLegEntityQuantity leg)
     , posLegFilledPrice = realToFrac (DB.positionLegEntityFilledPrice leg)
     , posLegFilledAt = DB.positionLegEntityFilledAt leg
     }
 
--- | Parse status text back to PositionStatus
 textToStatus :: Text -> Maybe PositionStatus
 textToStatus "opening"   = Just PositionOpening
 textToStatus "active"    = Just PositionActive
-textToStatus "partial"   = Just (PositionPartial 0)  -- exact qty lost in text roundtrip
+textToStatus "partial"   = Just (PositionPartial 0)
 textToStatus "closing"   = Just PositionClosing
 textToStatus "closed"    = Just PositionClosed
 textToStatus "cancelled" = Just PositionCancelled
 textToStatus _           = Nothing
 
--- | Parse side text back to Side
 textToSide :: Text -> Side
 textToSide "buy"  = Buy
 textToSide "sell" = Sell
 textToSide _      = Buy
 
--- | Safely parse a Text UUID
 readUUID :: Text -> Maybe UUID
 readUUID = UUID.fromString . Text.unpack
 
--- | Apply a PositionUpdate to an existing Position
 applyPositionUpdate :: Position -> PositionUpdate -> Position
 applyPositionUpdate pos update = pos
   { positionStatus = posUpdateStatus update
   }
 
--- ============================================================================
--- Interpreter with ConnectionPool
--- ============================================================================
-
 runPositionWithPool :: Members '[Embed IO] r => ConnectionPool -> Sem (PositionEffect ': r) a -> Sem r a
 runPositionWithPool pool = interpret $ \case
-  CreatePosition uid _strategy -> embed @IO $ do
+  CreatePosition uid strategy -> embed @IO $ do
     now <- getCurrentTime
     pid <- nextRandom
-    let position = Position
+    let metrics = strategyMetrics strategy
+        position = Position
           { positionId = PositionId pid
-          , positionStrategyId = strategyId _strategy
+          , positionStrategyId = strategyId strategy
           , positionStatus = PositionOpening
           , positionLegs = []
           , positionGreeks = Nothing
           , positionRealizedPL = Nothing
           , positionUnrealizedPL = Nothing
-          , positionMarginUsed = 0
+          , positionMarginUsed = strategyMarginRequired strategy
+          , positionMaxProfit = metricsMaxProfit metrics
+          , positionMaxLoss = metricsMaxLoss metrics
+          , positionEntryPremium = Just (strategyNetPremium strategy)
           , positionOpenedAt = Just now
           , positionClosedAt = Nothing
           , positionNotes = Nothing
@@ -167,45 +163,50 @@ runPositionWithPool pool = interpret $ \case
         pure $ entityToPosition entity legs
 
   ListPositions uid mStatus -> embed @IO $ do
-    entities <- case mStatus of
-      Just status -> DB.getPositions pool uid (Just status)
-      Nothing -> DB.getPositions pool uid Nothing
-    -- Fetch legs for each position and convert
-    mapM convertEntity entities
+    entities <- DB.getPositions pool uid mStatus
+    mapMaybe id <$> mapM convertEntity entities
     where
       convertEntity entity = do
         let pidText = DB.positionEntityPositionId entity
         legs <- DB.getPositionLegs pool pidText
-        pure $ case entityToPosition entity legs of
-          Just pos -> pos
-          Nothing -> error $ "Failed to convert position entity: " ++ show pidText
+        pure $ entityToPosition entity legs
 
-  CheckDuplicatePosition uid instId -> embed @IO $ do
-    DB.hasPositionForInstrument pool uid (unInstrumentId instId)
+  CheckDuplicatePosition uid (InstrumentId instId) -> embed @IO $
+    DB.hasPositionForInstrument pool uid instId
 
   RecoverOpenPositions uid -> embed @IO $ do
     putStrLn $ "Recovering open positions for user: " ++ show uid
     entities <- DB.getOpenPositions pool uid
     putStrLn $ "Found " ++ show (length entities) ++ " open positions in database"
-    mapM convertEntity entities
+    mapMaybe id <$> mapM convertEntity entities
     where
       convertEntity entity = do
         let pidText = DB.positionEntityPositionId entity
         legs <- DB.getPositionLegs pool pidText
-        pure $ case entityToPosition entity legs of
-          Just pos -> pos
-          Nothing -> error $ "Failed to convert position entity: " ++ show pidText
-
--- ============================================================================
--- Stub Interpreter (for development/testing without DB)
--- ============================================================================
+        pure $ entityToPosition entity legs
 
 runPositionIO :: Members '[Embed IO] r => Sem (PositionEffect ': r) a -> Sem r a
 runPositionIO = interpret $ \case
-  CreatePosition _uid _strategy -> embed @IO $ do
+  CreatePosition _uid strategy -> embed @IO $ do
     now <- getCurrentTime
     pid <- nextRandom
-    pure $ Position (PositionId pid) undefined PositionOpening [] Nothing Nothing Nothing 0 (Just now) Nothing Nothing
+    let metrics = strategyMetrics strategy
+    pure $ Position
+      { positionId = PositionId pid
+      , positionStrategyId = strategyId strategy
+      , positionStatus = PositionOpening
+      , positionLegs = []
+      , positionGreeks = Nothing
+      , positionRealizedPL = Nothing
+      , positionUnrealizedPL = Nothing
+      , positionMarginUsed = 0
+      , positionMaxProfit = metricsMaxProfit metrics
+      , positionMaxLoss = metricsMaxLoss metrics
+      , positionEntryPremium = Just (strategyNetPremium strategy)
+      , positionOpenedAt = Just now
+      , positionClosedAt = Nothing
+      , positionNotes = Nothing
+      }
   UpdatePosition _pid _update -> embed @IO $ pure Nothing
   ClosePosition _pid -> embed @IO $ pure Nothing
   GetPosition _pid -> embed @IO $ pure Nothing

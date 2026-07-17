@@ -146,10 +146,13 @@ ordersServer = openOrderHandler :<|> cancelOrderHandler
                   let warningMsg = case brokerConfig of
                         TBankConfig _ _ Sandbox -> Just "Using T-Bank SANDBOX mode (virtual money)"
                         TBankConfig _ _ Real -> Just "WARNING: Using T-Bank REAL trading (real money)!"
-                        OKXConfig _ _ _ demo -> if demo 
+                        OKXConfig _ _ _ demo -> if demo
                           then Just "Using OKX demo mode"
                           else Nothing
-                  
+                        BybitConfig _ _ testnet -> if testnet
+                          then Just "Using Bybit testnet"
+                          else Just "WARNING: Using Bybit LIVE trading!"
+
                   -- CHECK 2: Market hours (MOEX-specific)
                   marketCheck <- case brokerConfig of
                     TBankConfig{} -> do

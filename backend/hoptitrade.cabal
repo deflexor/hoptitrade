@@ -131,6 +131,10 @@ executable hoptitrade
         Effects.Position
         Effects.Settings
         Effects.WebSocket
+        Infrastructure.Broker.Bybit
+        Infrastructure.Broker.Bybit.Auth
+        Infrastructure.Broker.Bybit.Client
+        Infrastructure.Broker.Bybit.MarketData
         Infrastructure.Broker.OKX
         Infrastructure.Broker.TBank
         Infrastructure.Broker.TBank.Sandbox
@@ -143,6 +147,8 @@ executable hoptitrade
         Infrastructure.Persistence
         Infrastructure.WebSocket.Hub
         App.Application
+        App.PositionManager
+        App.PositionOrchestrator
         App.Server
 
 test-suite hoptitrade-test

@@ -15,7 +15,8 @@ import Data.Text (Text)
 import Data.Time (UTCTime)
 import Domain.Greeks (Greeks)
 import Domain.Types
-  ( OrderId (..)
+  ( InstrumentId (..)
+  , OrderId (..)
   , PositionId (..)
   , PositionStatus (..)
   , Price
@@ -25,22 +26,15 @@ import Domain.Types
   )
 import GHC.Generics (Generic)
 
--- ============================================================================
--- Position Leg (represents a filled order leg)
--- ============================================================================
-
 data PositionLeg = PositionLeg
   { posLegOrderId :: OrderId
+  , posLegInstrumentId :: InstrumentId
   , posLegSide :: Side
   , posLegQuantity :: Quantity
   , posLegFilledPrice :: Price
   , posLegFilledAt :: UTCTime
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
-
--- ============================================================================
--- Position (aggregate of all legs for a strategy)
--- ============================================================================
 
 data Position = Position
   { positionId :: PositionId
@@ -51,15 +45,14 @@ data Position = Position
   , positionRealizedPL :: Maybe Scientific
   , positionUnrealizedPL :: Maybe Scientific
   , positionMarginUsed :: Scientific
+  , positionMaxProfit :: Maybe Scientific
+  , positionMaxLoss :: Maybe Scientific
+  , positionEntryPremium :: Maybe Scientific
   , positionOpenedAt :: Maybe UTCTime
   , positionClosedAt :: Maybe UTCTime
   , positionNotes :: Maybe Text
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
-
--- ============================================================================
--- Position Update (from OKX WebSocket)
--- ============================================================================
 
 data PositionUpdate = PositionUpdate
   { posUpdatePositionId :: PositionId
@@ -70,14 +63,18 @@ data PositionUpdate = PositionUpdate
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
 
--- ============================================================================
--- Utility Functions
--- ============================================================================
-
-calculateUnrealizedPL :: Position -> Price -> Maybe Scientific
-calculateUnrealizedPL _position _currentPrice =
-  -- TODO: Implement P/L calculation based on position type and current market price
-  Nothing
+-- | Mark-to-market P/L from current mid prices per leg.
+-- Buy leg: (mark - fill) * qty; Sell leg: (fill - mark) * qty.
+calculateUnrealizedPL :: Position -> [(InstrumentId, Price)] -> Maybe Scientific
+calculateUnrealizedPL position marks =
+  let markMap = marks
+      legPL PositionLeg{..} =
+        lookup posLegInstrumentId markMap >>= \mark ->
+          let diff = case posLegSide of
+                Buy  -> mark - posLegFilledPrice
+                Sell -> posLegFilledPrice - mark
+          in Just (diff * posLegQuantity)
+  in fmap sum $ traverse legPL (positionLegs position)
 
 isPositionActive :: PositionStatus -> Bool
 isPositionActive PositionActive = True

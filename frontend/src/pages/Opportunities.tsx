@@ -1,22 +1,50 @@
 import { useState } from 'react';
-import { useStrategies, useOpenOrder } from '@/api';
+import { useStrategies, useOpenPosition } from '@/api';
 import { StrategyCard } from '@/components/StrategyCard';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { useAppStore } from '@/stores';
-import { TradingMode } from '@/domain/types';
+import { useSettings } from '@/api';
+import { Strategy } from '@/domain/types';
 import { ChevronDown, ChevronUp } from 'lucide-react';
 
 export function OpportunitiesPage() {
-  const { mode } = useAppStore();
-  const { data: strategies = [], isLoading, error } = useStrategies(mode);
-  const openOrder = useOpenOrder();
+  const { data: settings } = useSettings();
+  const autoOpen = settings?.settingsRiskAutoModeEnabled ?? false;
+  const { data: strategies = [], isLoading, error } = useStrategies();
+  const openPosition = useOpenPosition();
   const [showAllDetails, setShowAllDetails] = useState(false);
+  const [statusMsg, setStatusMsg] = useState<string | null>(null);
 
-  const handleOpenPosition = async (strategyId: string) => {
-    // TODO: Implement order opening with strategy details
-    console.log('Opening position for strategy:', strategyId);
+  const handleOpenPosition = async (strategy: Strategy) => {
+    const legs = strategy.strategyOpenLegs ?? [];
+    if (legs.length === 0) {
+      setStatusMsg('No tradeable legs on this strategy — wait for a refresh.');
+      return;
+    }
+    try {
+      const result = await openPosition.mutateAsync({
+        oprStrategyId: strategy.strategyId,
+        oprUnderlying: strategy.strategyUnderlying,
+        oprLegs: legs.map((l) => ({
+          olrInstrumentId: l.sliInstrumentId,
+          olrSide: l.sliSide,
+          olrQuantity: l.sliQuantity,
+          olrLimitPrice: l.sliLimitPrice,
+        })),
+        oprMaxProfit: strategy.strategyMetrics?.metricsMaxProfit ?? null,
+        oprMaxLoss: strategy.strategyMetrics?.metricsMaxLoss ?? null,
+        oprEntryPremium: strategy.strategyNetPremium ?? null,
+        oprMargin: strategy.strategyMarginRequired ?? 0,
+      });
+      if (result.openSuccess) {
+        setStatusMsg(`Opened ${strategy.strategyName}`);
+      } else {
+        setStatusMsg(result.openError || 'Failed to open position');
+      }
+    } catch (e) {
+      setStatusMsg(e instanceof Error ? e.message : 'Failed to open position');
+    }
   };
 
   if (isLoading) {
@@ -46,7 +74,7 @@ export function OpportunitiesPage() {
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Opportunities</h1>
           <p className="text-muted-foreground">
-            Discover options strategies based on market conditions
+            Bybit options across BTC, SOL, XAUT, XRP, MNT, DOGE
           </p>
         </div>
         <div className="flex items-center space-x-4">
@@ -70,11 +98,15 @@ export function OpportunitiesPage() {
               )}
             </Button>
           )}
-          <Badge variant={mode === TradingMode.Auto ? 'default' : 'secondary'}>
-            {mode === TradingMode.Auto ? 'Auto Mode' : 'Manual Mode'}
+          <Badge variant={autoOpen ? 'default' : 'secondary'}>
+            {autoOpen ? 'Auto-open on' : 'Manual open'}
           </Badge>
         </div>
       </div>
+
+      {statusMsg && (
+        <p className="text-sm text-muted-foreground">{statusMsg}</p>
+      )}
 
       {strategies.length === 0 ? (
         <Card>
@@ -91,10 +123,10 @@ export function OpportunitiesPage() {
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {strategies.map((strategy) => (
             <StrategyCard
-              key={strategy.strategyId}
+              key={`${strategy.strategyId}-${strategy.strategyName}-${strategy.strategyUnderlying}`}
               strategy={strategy}
-              onOpen={() => handleOpenPosition(strategy.strategyId)}
-              isOpening={openOrder.isPending}
+              onOpen={() => handleOpenPosition(strategy)}
+              isOpening={openPosition.isPending}
               forceShowDetails={showAllDetails}
             />
           ))}

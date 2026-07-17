@@ -25,6 +25,9 @@ module Infrastructure.Persistence
   , getTBankCredentials
   , saveTBankCredentials
   , deleteTBankCredentials
+  , getBybitCredentials
+  , saveBybitCredentials
+  , deleteBybitCredentials
   , getTBankSandboxAccounts
   , saveTBankSandboxAccount
   , deleteTBankSandboxAccount
@@ -67,10 +70,15 @@ import Database.Persist.Sqlite
 import Database.Persist.TH
 import Domain.Broker (BrokerMode (..))
 import Domain.Position (Position (..), PositionLeg (..))
-import Domain.Settings (SelectedBroker (..))
-import Domain.Types (PositionStatus (..), Quantity)
-import Domain.Settings (OKXCredentials (..), RiskParameters (..), TBankCredentials (..), TBankSandboxInfo (..))
-import Domain.Types (ApiKeyId (..), InstrumentId (..), OrderId (..), PositionId (..), Quantity, Side (..), UserId (..))
+import Domain.Settings
+  ( BybitCredentials (..)
+  , OKXCredentials (..)
+  , RiskParameters (..)
+  , SelectedBroker (..)
+  , TBankCredentials (..)
+  , TBankSandboxInfo (..)
+  )
+import Domain.Types (ApiKeyId (..), InstrumentId (..), OrderId (..), PositionId (..), PositionStatus (..), Quantity, Side (..), UserId (..))
 import Infrastructure.Encryption (EncryptionContext, encryptCredential, decryptCredential)
 
 -- ============================================================================
@@ -87,6 +95,9 @@ UserSettings
     maxPositionSize Double default=1000.0
     maxOpenPositions Int default=5
     autoModeEnabled Bool default=False
+    takeProfitPercent Double default=50.0
+    rebalanceEnabled Bool default=True
+    minRebalanceImprovement Double default=0.10
     UniqueUserSettings userId
     deriving Show Eq
 
@@ -110,6 +121,16 @@ TBankCredential
     UniqueTBankCredential userId
     deriving Show Eq
 
+-- Bybit Credentials (encrypted at rest)
+BybitCredential
+    userId Text
+    apiKeyId Text
+    apiKey Text
+    apiSecret Text
+    testnet Bool default=True
+    UniqueBybitCredential userId
+    deriving Show Eq
+
 -- T-Bank Sandbox Accounts
 TBankSandboxAccount
     userId Text
@@ -129,6 +150,9 @@ PositionEntity
     realizedPL Double Maybe
     unrealizedPL Double Maybe
     marginUsed Double
+    maxProfit Double Maybe
+    maxLoss Double Maybe
+    entryPremium Double Maybe
     openedAt UTCTime Maybe
     closedAt UTCTime Maybe
     notes Text Maybe
@@ -139,6 +163,7 @@ PositionEntity
 PositionLegEntity
     positionId Text
     orderId Text
+    instrumentId Text
     side Text
     quantity Double
     filledPrice Double
@@ -191,6 +216,7 @@ saveUserSettings pool (UserId uid) broker useSandbox RiskParameters{..} = withDa
       brokerText = case broker of
         BrokerOKX -> "okx"
         BrokerTBank -> "tbank"
+        BrokerBybit -> "bybit"
         BrokerNone -> "none"
   
   mExisting <- getBy $ UniqueUserSettings userIdText
@@ -203,6 +229,9 @@ saveUserSettings pool (UserId uid) broker useSandbox RiskParameters{..} = withDa
         , UserSettingsMaxPositionSize =. realToFrac riskMaxPositionSize
         , UserSettingsMaxOpenPositions =. riskMaxOpenPositions
         , UserSettingsAutoModeEnabled =. riskAutoModeEnabled
+        , UserSettingsTakeProfitPercent =. realToFrac riskTakeProfitPercent
+        , UserSettingsRebalanceEnabled =. riskRebalanceEnabled
+        , UserSettingsMinRebalanceImprovement =. realToFrac riskMinRebalanceImprovement
         ]
       return key
     Nothing -> do
@@ -214,6 +243,9 @@ saveUserSettings pool (UserId uid) broker useSandbox RiskParameters{..} = withDa
         , userSettingsMaxPositionSize = realToFrac riskMaxPositionSize
         , userSettingsMaxOpenPositions = riskMaxOpenPositions
         , userSettingsAutoModeEnabled = riskAutoModeEnabled
+        , userSettingsTakeProfitPercent = realToFrac riskTakeProfitPercent
+        , userSettingsRebalanceEnabled = riskRebalanceEnabled
+        , userSettingsMinRebalanceImprovement = realToFrac riskMinRebalanceImprovement
         }
 
 -- | Get OKX credentials for a user (decrypts sensitive fields)
@@ -351,9 +383,62 @@ deleteTBankCredentials pool (UserId uid) = withDatabase pool $ do
   mCred <- getBy $ UniqueTBankCredential userIdText
   case mCred of
     Just (Entity key _) -> do
-      -- Also delete all associated sandbox accounts
       deleteWhere [TBankSandboxAccountUserId ==. userIdText]
       delete key
+    Nothing -> return ()
+
+-- | Get Bybit credentials (decrypts)
+getBybitCredentials :: MonadIO m => ConnectionPool -> EncryptionContext -> UserId -> m (Maybe BybitCredentials)
+getBybitCredentials pool encCtx (UserId uid) = liftIO $ withDatabase pool $ do
+  mEntity <- getBy $ UniqueBybitCredential (Text.pack $ show uid)
+  case mEntity of
+    Nothing -> pure Nothing
+    Just (Entity _ BybitCredential{..}) -> liftIO $ do
+      mApiKey <- decryptCredential encCtx bybitCredentialApiKey
+      mApiSecret <- decryptCredential encCtx bybitCredentialApiSecret
+      case (mApiKey, mApiSecret) of
+        (Just apiKey, Just apiSecret) ->
+          pure $ Just $ BybitCredentials
+            { bybitApiKeyId = ApiKeyId $ read $ Text.unpack bybitCredentialApiKeyId
+            , bybitApiKey = apiKey
+            , bybitApiSecret = apiSecret
+            , bybitTestnet = bybitCredentialTestnet
+            }
+        _ -> do
+          putStrLn "WARNING: Failed to decrypt Bybit credentials"
+          pure Nothing
+
+saveBybitCredentials :: MonadIO m => ConnectionPool -> EncryptionContext -> UserId -> BybitCredentials -> m ()
+saveBybitCredentials pool encCtx (UserId uid) BybitCredentials{..} = liftIO $ withDatabase pool $ do
+  let userIdText = Text.pack $ show uid
+  encApiKey <- liftIO $ encryptCredential encCtx bybitApiKey
+  encApiSecret <- liftIO $ encryptCredential encCtx bybitApiSecret
+  mExisting <- getBy $ UniqueBybitCredential userIdText
+  case mExisting of
+    Just (Entity key _) ->
+      update key
+        [ BybitCredentialApiKeyId =. Text.pack (show $ apiKeyIdToText bybitApiKeyId)
+        , BybitCredentialApiKey =. encApiKey
+        , BybitCredentialApiSecret =. encApiSecret
+        , BybitCredentialTestnet =. bybitTestnet
+        ]
+    Nothing -> do
+      _ <- insert $ BybitCredential
+        { bybitCredentialUserId = userIdText
+        , bybitCredentialApiKeyId = Text.pack (show $ apiKeyIdToText bybitApiKeyId)
+        , bybitCredentialApiKey = encApiKey
+        , bybitCredentialApiSecret = encApiSecret
+        , bybitCredentialTestnet = bybitTestnet
+        }
+      return ()
+  where
+    apiKeyIdToText (ApiKeyId t) = t
+
+deleteBybitCredentials :: MonadIO m => ConnectionPool -> UserId -> m ()
+deleteBybitCredentials pool (UserId uid) = withDatabase pool $ do
+  mEntity <- getBy $ UniqueBybitCredential (Text.pack $ show uid)
+  case mEntity of
+    Just (Entity key _) -> delete key
     Nothing -> return ()
 
 -- | Get all T-Bank sandbox accounts for a user
@@ -462,6 +547,9 @@ savePosition pool (UserId uid) Position{..} = withDatabase pool $ do
     , positionEntityRealizedPL = realToFrac <$> positionRealizedPL
     , positionEntityUnrealizedPL = realToFrac <$> positionUnrealizedPL
     , positionEntityMarginUsed = realToFrac positionMarginUsed
+    , positionEntityMaxProfit = realToFrac <$> positionMaxProfit
+    , positionEntityMaxLoss = realToFrac <$> positionMaxLoss
+    , positionEntityEntryPremium = realToFrac <$> positionEntryPremium
     , positionEntityOpenedAt = positionOpenedAt
     , positionEntityClosedAt = positionClosedAt
     , positionEntityNotes = positionNotes
@@ -472,7 +560,6 @@ savePosition pool (UserId uid) Position{..} = withDatabase pool $ do
   
   -- Track active instruments (for duplicate detection)
   when (isActiveStatus positionStatus) $ do
-    -- Get instrument IDs from legs
     let instrumentIds = getInstrumentIdsFromLegs positionLegs
     mapM_ (trackActiveInstrument uidText now pidText) instrumentIds
   
@@ -490,19 +577,19 @@ savePosition pool (UserId uid) Position{..} = withDatabase pool $ do
     insertLeg pid PositionLeg{..} = insert_ $ PositionLegEntity
       { positionLegEntityPositionId = pid
       , positionLegEntityOrderId = Text.pack $ show posLegOrderId
+      , positionLegEntityInstrumentId = let InstrumentId i = posLegInstrumentId in i
       , positionLegEntitySide = case posLegSide of Buy -> "buy"; Sell -> "sell"
       , positionLegEntityQuantity = realToFrac posLegQuantity
       , positionLegEntityFilledPrice = realToFrac posLegFilledPrice
       , positionLegEntityFilledAt = posLegFilledAt
       }
     
-    getInstrumentIdsFromLegs legs = [] -- TODO: Extract from order lookup
+    getInstrumentIdsFromLegs = map (\(PositionLeg{posLegInstrumentId = InstrumentId i}) -> i)
     
     trackActiveInstrument userId time posId instId = do
-      -- Check if already tracking this instrument
       mExisting <- getBy $ UniqueActiveInstrument userId instId
       case mExisting of
-        Just _ -> return () -- Already tracked
+        Just _ -> return ()
         Nothing -> do
           _ <- insert $ ActiveInstrument
             { activeInstrumentUserId = userId
@@ -523,6 +610,9 @@ updatePosition pool Position{..} = withDatabase pool $ do
         , PositionEntityRealizedPL =. realToFrac <$> positionRealizedPL
         , PositionEntityUnrealizedPL =. realToFrac <$> positionUnrealizedPL
         , PositionEntityMarginUsed =. realToFrac positionMarginUsed
+        , PositionEntityMaxProfit =. realToFrac <$> positionMaxProfit
+        , PositionEntityMaxLoss =. realToFrac <$> positionMaxLoss
+        , PositionEntityEntryPremium =. realToFrac <$> positionEntryPremium
         , PositionEntityOpenedAt =. positionOpenedAt
         , PositionEntityClosedAt =. positionClosedAt
         , PositionEntityNotes =. positionNotes

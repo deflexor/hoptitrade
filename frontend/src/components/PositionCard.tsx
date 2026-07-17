@@ -77,6 +77,28 @@ export function PositionCard({ position, onClose, isClosing }: PositionCardProps
             </p>
           </div>
         </div>
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Max Profit</p>
+            <p className="font-medium text-sm">{formatCurrency(position.positionMaxProfit ?? null)}</p>
+          </div>
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Max Loss</p>
+            <p className="font-medium text-sm">{formatCurrency(position.positionMaxLoss ?? null)}</p>
+          </div>
+        </div>
+        {position.positionLegs?.length > 0 && (
+          <div className="space-y-1">
+            <p className="text-xs text-muted-foreground">Legs</p>
+            <ul className="text-xs space-y-1">
+              {position.positionLegs.map((leg, i) => (
+                <li key={i} className="font-mono truncate">
+                  {String(leg.posLegSide)} {leg.posLegInstrumentId} @ {leg.posLegFilledPrice}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {/* Greeks */}
         {position.positionGreeks && (

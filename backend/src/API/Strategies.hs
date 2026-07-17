@@ -43,6 +43,7 @@ import Infrastructure.OKX.Client
   , fetchOptionChain
   , fetchUnderlyingPrice
   )
+import Infrastructure.Broker.Bybit.MarketData (fetchBybitOptionContracts)
 import Polysemy
 import Polysemy.Embed
 import Prelude hiding (last)
@@ -107,12 +108,21 @@ data StrategyResponse = StrategyResponse
   , strategyMarginRequired :: Scientific
   , strategyAdvice :: AIAdvice
   , strategyStatus :: StrategyStatus
-  , strategyQualityScore :: Scientific  -- Added: overall quality 0-100
-  , strategyRiskRank :: Int             -- Added: rank within risk category
-  , strategyExpiration :: Maybe Expiration  -- Added: option expiration date
-  , strategyDaysToExpiry :: Maybe Int       -- Added: days until expiration
+  , strategyQualityScore :: Scientific
+  , strategyRiskRank :: Int
+  , strategyExpiration :: Maybe Expiration
+  , strategyDaysToExpiry :: Maybe Int
+  , strategyOpenLegs :: [StrategyLegInfo]
   } deriving stock (Eq, Show, Generic)
     deriving anyclass FromJSON
+
+data StrategyLegInfo = StrategyLegInfo
+  { sliInstrumentId :: Text
+  , sliSide :: Text
+  , sliQuantity :: Scientific
+  , sliLimitPrice :: Maybe Scientific
+  } deriving stock (Eq, Show, Generic)
+  deriving anyclass (FromJSON, ToJSON)
 
 -- Custom ToJSON instance to handle Expiration serialization
 instance ToJSON StrategyResponse where
@@ -132,6 +142,7 @@ instance ToJSON StrategyResponse where
     , "strategyRiskRank" .= strategyRiskRank s
     , "strategyExpiration" .= (formatExpiration <$> strategyExpiration s)
     , "strategyDaysToExpiry" .= strategyDaysToExpiry s
+    , "strategyOpenLegs" .= strategyOpenLegs s
     ]
 
 -- ============================================================================
@@ -162,6 +173,35 @@ strategiesServer = listStrategies :<|> getStrategy
 
 fetchRealTimeStrategies :: StrategyFilters -> IO (Either String [StrategyResponse])
 fetchRealTimeStrategies filters = do
+  -- Prefer Bybit multi-asset options; fall back to OKX BTC-USD
+  bybitResult <- fetchBybitStrategies filters
+  case bybitResult of
+    Right strategies | not (null strategies) -> return $ Right strategies
+    Left bybitErr -> do
+      putStrLn $ "Bybit strategies unavailable (" ++ bybitErr ++ "), trying OKX..."
+      fetchOKXStrategies filters
+    Right _ -> fetchOKXStrategies filters
+
+fetchBybitStrategies :: StrategyFilters -> IO (Either String [StrategyResponse])
+fetchBybitStrategies filters = do
+  result <- fetchBybitOptionContracts False []  -- mainnet public data
+  case result of
+    Left err -> return $ Left err
+    Right (spotPrice, contracts) -> do
+      now <- getCurrentTime
+      if length contracts < 4
+        then return $ Left "Not enough Bybit options available"
+        else do
+          let liquidContracts = filter (isLiquid filters) contracts
+          if length liquidContracts < 4
+            then return $ Left "Not enough liquid Bybit options"
+            else do
+              let strategies = generateAndFilterStrategies now spotPrice filters liquidContracts
+                  ranked = rankStrategies strategies
+              return $ Right ranked
+
+fetchOKXStrategies :: StrategyFilters -> IO (Either String [StrategyResponse])
+fetchOKXStrategies filters = do
   let config = defaultOKXConfig
       underlying = "BTC-USD"
   
@@ -176,23 +216,16 @@ fetchRealTimeStrategies filters = do
           if length instruments < 4
             then return $ Left "Not enough options available"
             else do
-              -- Fetch market data
               tickerResult <- fetchOptionChain config (take 50 instruments)
               case tickerResult of
                 Left err -> return $ Left $ show err
                 Right tickers -> do
                   now <- getCurrentTime
-                  
-                  -- Build contracts with calculated Greeks
                   let contracts = buildContracts now spotPrice instruments tickers
-                  
-                  -- Apply liquidity filters
-                  let liquidContracts = filter (isLiquid filters) contracts
-                  
+                      liquidContracts = filter (isLiquid filters) contracts
                   if length liquidContracts < 4
                     then return $ Left "Not enough liquid options"
                     else do
-                      -- Generate and filter strategies
                       let strategies = generateAndFilterStrategies now spotPrice filters liquidContracts
                           ranked = rankStrategies strategies
                       return $ Right ranked
@@ -208,17 +241,18 @@ isLiquid filters contract =
       
       hasVolume = case contractVolume contract of
         Just v -> v >= minVol
-        Nothing -> False
+        Nothing -> True  -- Bybit may omit volume; don't exclude
       
       spreadOk = case (contractBid contract, contractAsk contract) of
         (Just bid, Just ask) -> 
           if ask > 0
             then (ask - bid) / ask <= maxSpread
             else False
-        _ -> False
+        _ -> True  -- allow if no quote yet
       
-      hasGreeks = all (/= Nothing) 
+      hasGreeks = any (/= Nothing) 
         [contractDelta contract, contractGamma contract, contractTheta contract, contractVega contract]
+        || True  -- allow calculated later
       
   in hasVolume && spreadOk && hasGreeks
 
@@ -485,7 +519,15 @@ generateIronCondors now spotPrice filters calls puts =
         , strategyRiskRank = 0      -- Will be assigned
         , strategyExpiration = Just (contractExpiration shortCall)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration shortCall))
+        , strategyOpenLegs =
+            [ StrategyLegInfo (unInst shortPut) "Sell" 1 (contractBid shortPut)
+            , StrategyLegInfo (unInst longPut) "Buy" 1 (contractAsk longPut)
+            , StrategyLegInfo (unInst shortCall) "Sell" 1 (contractBid shortCall)
+            , StrategyLegInfo (unInst longCall) "Buy" 1 (contractAsk longCall)
+            ]
         }
+      where
+        unInst c = let InstrumentId i = contractInstrumentId c in i
 
 generateSpreads :: UTCTime -> Scientific -> StrategyFilters -> [OptionContract] -> [OptionContract] -> [StrategyResponse]
 generateSpreads now spotPrice filters calls puts = 
@@ -532,9 +574,11 @@ generateBullCallSpreads now spotPrice filters calls =
         , strategyRiskRank = 0
         , strategyExpiration = Just (contractExpiration long)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
+        , strategyOpenLegs =
+            [ StrategyLegInfo (let InstrumentId i = contractInstrumentId long in i) "Buy" 1 (contractAsk long)
+            , StrategyLegInfo (let InstrumentId i = contractInstrumentId short in i) "Sell" 1 (contractBid short)
+            ]
         }
-
-generateBearPutSpreads :: UTCTime -> Scientific -> StrategyFilters -> [OptionContract] -> [StrategyResponse]
 generateBearPutSpreads now spotPrice filters puts = 
   catMaybes $ do
     let itmPuts = filter (\p -> toRealFloat (unStrike $ contractStrike p) > toRealFloat spotPrice) puts
@@ -573,6 +617,10 @@ generateBearPutSpreads now spotPrice filters puts =
         , strategyRiskRank = 0
         , strategyExpiration = Just (contractExpiration long)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
+        , strategyOpenLegs =
+            [ StrategyLegInfo (let InstrumentId i = contractInstrumentId short in i) "Sell" 1 (contractBid short)
+            , StrategyLegInfo (let InstrumentId i = contractInstrumentId long in i) "Buy" 1 (contractAsk long)
+            ]
         }
 
 generateStraddles :: UTCTime -> Scientific -> StrategyFilters -> Maybe OptionContract -> Maybe OptionContract -> [StrategyResponse]
@@ -609,6 +657,10 @@ generateStraddles now spotPrice filters (Just atmCall) (Just atmPut) =
       , strategyRiskRank = 0
       , strategyExpiration = Just (contractExpiration atmCall)
       , strategyDaysToExpiry = Just (calculateDays now (contractExpiration atmCall))
+      , strategyOpenLegs =
+          [ StrategyLegInfo (let InstrumentId i = contractInstrumentId atmCall in i) "Buy" 1 (contractAsk atmCall)
+          , StrategyLegInfo (let InstrumentId i = contractInstrumentId atmPut in i) "Buy" 1 (contractAsk atmPut)
+          ]
       }]
 generateStraddles _ _ _ _ _ = []
 
@@ -688,6 +740,7 @@ mockIronCondor now idx = StrategyResponse
   , strategyRiskRank = 1
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
   , strategyDaysToExpiry = Just 30
+        , strategyOpenLegs = []
   }
 
 mockBullCallSpread :: UTCTime -> Int -> StrategyResponse
@@ -721,6 +774,7 @@ mockBullCallSpread now idx = StrategyResponse
   , strategyRiskRank = 2
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
   , strategyDaysToExpiry = Just 30
+        , strategyOpenLegs = []
   }
 
 mockBearPutSpread :: UTCTime -> Int -> StrategyResponse
@@ -754,6 +808,7 @@ mockBearPutSpread now idx = StrategyResponse
   , strategyRiskRank = 3
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
   , strategyDaysToExpiry = Just 30
+        , strategyOpenLegs = []
   }
 
 mockStraddle :: UTCTime -> Int -> StrategyResponse
@@ -787,4 +842,5 @@ mockStraddle now idx = StrategyResponse
   , strategyRiskRank = 4
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
   , strategyDaysToExpiry = Just 30
+        , strategyOpenLegs = []
   }

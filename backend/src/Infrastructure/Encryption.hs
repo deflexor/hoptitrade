@@ -14,7 +14,7 @@ module Infrastructure.Encryption
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Crypto.Cipher.AES (AES256)
 import Crypto.Cipher.Types (AEADMode (..), AuthTag (..), Cipher (..), aeadInit, aeadSimpleDecrypt, aeadSimpleEncrypt)
-import Crypto.Error (CryptoFailable (..), eitherCryptoError)
+import Crypto.Error (CryptoFailable (..))
 import Crypto.Hash (SHA256 (..), hashWith)
 import Crypto.Random.Types (getRandomBytes)
 import Data.ByteArray (convert)
@@ -30,45 +30,42 @@ import System.Environment (lookupEnv)
 -- Encryption Context
 -- ============================================================================
 
--- | Encryption context holding an initialized AES-256 cipher.
--- The master key must be exactly 32 bytes (256 bits).
 newtype EncryptionContext = EncryptionContext
   { encCipher :: AES256
   }
 
--- | Initialize encryption context from environment variable.
--- Key must be exactly 32 bytes (base64-decoded if needed, or raw bytes).
+-- | Initialize encryption from HOPTITRADE_ENCRYPTION_KEY.
+-- Required unless HOPTITRADE_ENV=dev (then a random ephemeral key is allowed with warning).
 initializeEncryption :: MonadIO m => m EncryptionContext
 initializeEncryption = liftIO $ do
   mKey <- lookupEnv "HOPTITRADE_ENCRYPTION_KEY"
+  mEnv <- lookupEnv "HOPTITRADE_ENV"
   keyBytes <- case mKey of
     Just key -> do
       let raw = TE.encodeUtf8 $ Text.pack key
-      -- Try base64 decode first; if it fails, use raw bytes (padded/truncated to 32)
       case Base64.decode raw of
         Right bs
           | ByteString.length bs >= 32 -> pure $ ByteString.take 32 bs
           | otherwise -> pure $ padKey raw
         Left _ -> pure $ padKey raw
-    Nothing -> do
-      putStrLn "WARNING: Generating random encryption key (credentials will not survive restart!)"
-      putStrLn "Set HOPTITRADE_ENCRYPTION_KEY (32+ bytes, raw or base64) for persistent encryption."
-      getRandomBytes 32
+    Nothing -> case mEnv of
+      Just "dev" -> do
+        putStrLn "WARNING: Generating random encryption key (credentials will not survive restart!)"
+        putStrLn "Set HOPTITRADE_ENCRYPTION_KEY (32+ bytes, raw or base64) for persistent encryption."
+        getRandomBytes 32
+      _ -> do
+        putStrLn "FATAL: HOPTITRADE_ENCRYPTION_KEY is required (or set HOPTITRADE_ENV=dev)."
+        error "HOPTITRADE_ENCRYPTION_KEY must be set unless HOPTITRADE_ENV=dev"
 
   case cipherInit keyBytes :: CryptoFailable AES256 of
     CryptoFailed err -> do
       putStrLn $ "FATAL: Failed to initialize AES-256 cipher: " ++ show err
-      putStrLn "Generating fallback key — credentials will not be recoverable!"
-      fallbackKey <- getRandomBytes 32 :: IO ByteString
-      case cipherInit fallbackKey of
-        CryptoFailed _ -> error "Impossible: getRandomBytes 32 should always produce a valid AES-256 key"
-        CryptoPassed c -> pure $ EncryptionContext c
+      error "Failed to initialize AES-256 cipher from HOPTITRADE_ENCRYPTION_KEY"
     CryptoPassed cipher -> do
       putStrLn "Encryption: AES-256-GCM initialized"
       pure $ EncryptionContext cipher
   where
     padKey bs =
-      -- Pad or truncate to exactly 32 bytes using repeated hashing
       let h1 = convert (hashWith SHA256 bs) :: ByteString
       in ByteString.take 32 h1
 
@@ -76,11 +73,8 @@ initializeEncryption = liftIO $ do
 -- Credential Encryption (AES-256-GCM)
 -- ============================================================================
 
--- Wire format: IV(12 bytes) || AuthTag(16 bytes) || ciphertext
--- All base64-encoded together for storage as Text.
+-- Wire format: IV(12 bytes) || AuthTag(16 bytes) || ciphertext — base64-encoded.
 
--- | Encrypt a credential using AES-256-GCM with a random 12-byte IV.
--- Output is base64-encoded: IV || AuthTag || ciphertext.
 encryptCredential :: EncryptionContext -> Text -> IO Text
 encryptCredential ctx plaintext = do
   iv <- getRandomBytes 12
@@ -93,14 +87,11 @@ encryptCredential ctx plaintext = do
           packed = iv <> convert authTag <> ciphertext
       pure $ TE.decodeUtf8 $ Base64.encode packed
 
--- | Decrypt a credential that was encrypted with 'encryptCredential'.
--- Returns Nothing if the data is corrupted or tampered with.
 decryptCredential :: EncryptionContext -> Text -> IO (Maybe Text)
 decryptCredential ctx encrypted =
   case Base64.decode (TE.encodeUtf8 encrypted) of
     Left _ -> pure Nothing
     Right packed
-      -- Minimum size: IV(12) + AuthTag(16) = 28 bytes
       | ByteString.length packed < 28 -> pure Nothing
       | otherwise ->
           let iv = ByteString.take 12 packed
@@ -116,7 +107,6 @@ decryptCredential ctx encrypted =
                   Nothing    -> pure Nothing
                   Just plain -> pure $ Just $ TE.decodeUtf8 plain
 
--- | Hash a credential using SHA-256 (one-way, cannot be reversed).
 hashCredential :: Text -> Text
 hashCredential text =
   let textBs = TE.encodeUtf8 text

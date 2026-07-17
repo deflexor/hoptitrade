@@ -4,6 +4,7 @@ import {
   useUpdateSettings,
   useSaveOKXCredentials,
   useSaveTBankCredentials,
+  useSaveBybitCredentials,
   useBrokerStatus,
   useSetBroker,
   useTBankSandboxAccounts,
@@ -31,6 +32,7 @@ export function SettingsPage() {
   const updateSettings = useUpdateSettings();
   const saveOKXCredentials = useSaveOKXCredentials();
   const saveTBankCredentials = useSaveTBankCredentials();
+  const saveBybitCredentials = useSaveBybitCredentials();
   const setBroker = useSetBroker();
   const saveSandboxAccount = useSaveTBankSandboxAccount();
   const setDefaultAccount = useSetDefaultTBankSandboxAccount();
@@ -43,6 +45,8 @@ export function SettingsPage() {
   const [maxPositionSize, setMaxPositionSize] = useState(1000);
   const [maxOpenPositions, setMaxOpenPositions] = useState(5);
   const [autoModeEnabled, setAutoModeEnabled] = useState(false);
+  const [takeProfitPercent, setTakeProfitPercent] = useState(50);
+  const [rebalanceEnabled, setRebalanceEnabled] = useState(true);
 
   // Broker Selection
   const [selectedBroker, setSelectedBroker] = useState<SelectedBroker>(SelectedBroker.BrokerNone);
@@ -53,6 +57,11 @@ export function SettingsPage() {
   const [okxApiSecret, setOkxApiSecret] = useState('');
   const [okxPassphrase, setOkxPassphrase] = useState('');
   const [okxIsDemo, setOkxIsDemo] = useState(true);
+
+  // Bybit Credentials
+  const [bybitApiKey, setBybitApiKey] = useState('');
+  const [bybitApiSecret, setBybitApiSecret] = useState('');
+  const [bybitTestnet, setBybitTestnet] = useState(true);
 
   // T-Bank Credentials
   const [tbankSandboxToken, setTbankSandboxToken] = useState('');
@@ -70,6 +79,8 @@ export function SettingsPage() {
       setMaxPositionSize(settings.settingsRiskMaxPositionSize || 1000);
       setMaxOpenPositions(settings.settingsRiskMaxOpenPositions || 5);
       setAutoModeEnabled(settings.settingsRiskAutoModeEnabled || false);
+      setTakeProfitPercent(settings.settingsRiskTakeProfitPercent || 50);
+      setRebalanceEnabled(settings.settingsRiskRebalanceEnabled ?? true);
       setSelectedBroker(settings.settingsSelectedBroker || SelectedBroker.BrokerNone);
       setUseSandbox(settings.settingsUseSandbox ?? true);
     }
@@ -97,6 +108,8 @@ export function SettingsPage() {
         updateMaxPositionSize: maxPositionSize,
         updateMaxOpenPositions: maxOpenPositions,
         updateAutoModeEnabled: autoModeEnabled,
+        updateTakeProfitPercent: takeProfitPercent,
+        updateRebalanceEnabled: rebalanceEnabled,
       });
       setStatusMessage({ type: 'success', message: 'Risk settings saved successfully!' });
     } catch (err) {
@@ -110,12 +123,35 @@ export function SettingsPage() {
         sbrBroker: selectedBroker,
         sbrUseSandbox: useSandbox,
       });
-      setStatusMessage({ 
-        type: 'success', 
-        message: `Broker set to ${selectedBroker === SelectedBroker.BrokerOKX ? 'OKX' : selectedBroker === SelectedBroker.BrokerTBank ? 'T-Bank' : 'None'} (${useSandbox ? 'Sandbox' : 'Real'} mode)` 
+      const name =
+        selectedBroker === SelectedBroker.BrokerOKX ? 'OKX' :
+        selectedBroker === SelectedBroker.BrokerTBank ? 'T-Bank' :
+        selectedBroker === SelectedBroker.BrokerBybit ? 'Bybit' : 'None';
+      setStatusMessage({
+        type: 'success',
+        message: `Broker set to ${name} (${useSandbox ? 'Sandbox/Testnet' : 'Real'} mode)`,
       });
     } catch (err) {
       setStatusMessage({ type: 'error', message: 'Failed to set broker.' });
+    }
+  };
+
+  const handleSaveBybitCredentials = async () => {
+    if (!bybitApiKey || !bybitApiSecret) {
+      setStatusMessage({ type: 'error', message: 'Please fill in Bybit API key and secret.' });
+      return;
+    }
+    try {
+      await saveBybitCredentials.mutateAsync({
+        bybitReqApiKey: bybitApiKey,
+        bybitReqApiSecret: bybitApiSecret,
+        bybitReqTestnet: bybitTestnet,
+      });
+      setStatusMessage({ type: 'success', message: 'Bybit credentials saved!' });
+      setBybitApiKey('');
+      setBybitApiSecret('');
+    } catch (err) {
+      setStatusMessage({ type: 'error', message: 'Failed to save Bybit credentials.' });
     }
   };
 
@@ -247,7 +283,8 @@ export function SettingsPage() {
           <CardContent>
             <div className="flex items-center gap-4">
               <Badge variant={useSandbox ? 'default' : 'destructive'} className="text-sm">
-                {brokerStatus.broker === SelectedBroker.BrokerOKX ? 'OKX' : 'T-Bank'}
+                {brokerStatus.broker === SelectedBroker.BrokerOKX ? 'OKX' :
+                 brokerStatus.broker === SelectedBroker.BrokerBybit ? 'Bybit' : 'T-Bank'}
               </Badge>
               <Badge variant={useSandbox ? 'secondary' : 'destructive'} className="text-sm">
                 {useSandbox ? 'Sandbox Mode' : 'REAL TRADING'}
@@ -261,8 +298,9 @@ export function SettingsPage() {
       )}
 
       <Tabs defaultValue="broker" className="space-y-4">
-        <TabsList className="grid w-full grid-cols-4">
+        <TabsList className="grid w-full grid-cols-5">
           <TabsTrigger value="broker">Broker</TabsTrigger>
+          <TabsTrigger value="bybit">Bybit</TabsTrigger>
           <TabsTrigger value="okx">OKX</TabsTrigger>
           <TabsTrigger value="tbank">T-Bank</TabsTrigger>
           <TabsTrigger value="risk">Risk</TabsTrigger>
@@ -278,7 +316,7 @@ export function SettingsPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-3 gap-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <button
                   onClick={() => setSelectedBroker(SelectedBroker.BrokerNone)}
                   className={`p-4 rounded-lg border text-center transition-colors ${
@@ -289,6 +327,20 @@ export function SettingsPage() {
                 >
                   <div className="font-medium">None</div>
                   <div className="text-sm text-muted-foreground">No trading</div>
+                </button>
+                <button
+                  onClick={() => setSelectedBroker(SelectedBroker.BrokerBybit)}
+                  className={`p-4 rounded-lg border text-center transition-colors ${
+                    selectedBroker === SelectedBroker.BrokerBybit
+                      ? 'border-primary bg-primary/5'
+                      : 'border-border hover:border-primary/50'
+                  }`}
+                >
+                  <div className="font-medium">Bybit</div>
+                  <div className="text-sm text-muted-foreground">Options BTC/SOL/…</div>
+                  {settings?.settingsHasBybitCredentials && (
+                    <Badge variant="outline" className="mt-2">Configured</Badge>
+                  )}
                 </button>
                 <button
                   onClick={() => setSelectedBroker(SelectedBroker.BrokerOKX)}
@@ -313,7 +365,7 @@ export function SettingsPage() {
                   }`}
                 >
                   <div className="font-medium">T-Bank</div>
-                  <div className="text-sm text-muted-foreground">MOEX (Russian market)</div>
+                  <div className="text-sm text-muted-foreground">MOEX</div>
                   {settings?.settingsHasTBankSandboxToken && (
                     <Badge variant="outline" className="mt-2">Sandbox Ready</Badge>
                   )}
@@ -363,6 +415,65 @@ export function SettingsPage() {
         </TabsContent>
 
         {/* OKX Tab */}
+        <TabsContent value="bybit" className="space-y-4">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Wallet className="h-5 w-5" />
+                Bybit API Credentials
+              </CardTitle>
+              <CardDescription>
+                Options on BTC, SOL, XAUT, XRP, MNT, DOGE
+                {settings?.settingsSupportedBybitCoins && (
+                  <span className="block mt-1 text-xs">
+                    Supported: {settings.settingsSupportedBybitCoins.join(', ')}
+                  </span>
+                )}
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {settings?.settingsHasBybitCredentials && (
+                <Badge variant="default" className="bg-green-600">
+                  <CheckCircle2 className="mr-1 h-3 w-3" />
+                  Credentials Saved
+                </Badge>
+              )}
+              <div className="space-y-2">
+                <Label htmlFor="bybit-api-key">API Key</Label>
+                <Input
+                  id="bybit-api-key"
+                  type="password"
+                  value={bybitApiKey}
+                  onChange={(e) => setBybitApiKey(e.target.value)}
+                  placeholder="Enter your Bybit API key"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="bybit-api-secret">API Secret</Label>
+                <Input
+                  id="bybit-api-secret"
+                  type="password"
+                  value={bybitApiSecret}
+                  onChange={(e) => setBybitApiSecret(e.target.value)}
+                  placeholder="Enter your Bybit API secret"
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border p-4">
+                <div className="space-y-0.5">
+                  <Label>Testnet</Label>
+                  <p className="text-sm text-muted-foreground">Use Bybit testnet endpoints</p>
+                </div>
+                <Switch checked={bybitTestnet} onCheckedChange={setBybitTestnet} />
+              </div>
+            </CardContent>
+            <CardFooter>
+              <Button onClick={handleSaveBybitCredentials} className="w-full">
+                Save Bybit Credentials
+              </Button>
+            </CardFooter>
+          </Card>
+        </TabsContent>
+
         <TabsContent value="okx" className="space-y-4">
           <Card>
             <CardHeader>
@@ -651,16 +762,39 @@ export function SettingsPage() {
                 />
               </div>
               <Separator />
+              <div className="space-y-2">
+                <Label htmlFor="take-profit">Take Profit (% of max profit)</Label>
+                <Input
+                  id="take-profit"
+                  type="number"
+                  value={takeProfitPercent}
+                  onChange={(e) => setTakeProfitPercent(parseFloat(e.target.value))}
+                  min={10}
+                  max={100}
+                />
+              </div>
               <div className="flex items-center justify-between rounded-lg border p-4">
                 <div className="space-y-0.5">
-                  <Label className="text-base">Auto Trading Mode</Label>
+                  <Label className="text-base">Auto-open new positions</Label>
                   <p className="text-sm text-muted-foreground">
-                    Allow AI to automatically open positions
+                    When off, select opportunities and click Open. Manage (MTM, TP close, rebalance) always runs.
                   </p>
                 </div>
                 <Switch
                   checked={autoModeEnabled}
                   onCheckedChange={setAutoModeEnabled}
+                />
+              </div>
+              <div className="flex items-center justify-between rounded-lg border p-4">
+                <div className="space-y-0.5">
+                  <Label className="text-base">Leg rebalance</Label>
+                  <p className="text-sm text-muted-foreground">
+                    Suggest/roll legs when it improves expected remaining profit
+                  </p>
+                </div>
+                <Switch
+                  checked={rebalanceEnabled}
+                  onCheckedChange={setRebalanceEnabled}
                 />
               </div>
             </CardContent>
