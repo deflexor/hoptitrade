@@ -21,6 +21,7 @@ export function ModeToggle() {
             updateMaxOpenPositions: settings.settingsRiskMaxOpenPositions,
             updateAutoModeEnabled: checked,
             updateTakeProfitPercent: settings.settingsRiskTakeProfitPercent,
+            updateKellyFraction: settings.settingsRiskKellyFraction,
             updateRebalanceEnabled: settings.settingsRiskRebalanceEnabled,
             updateMinRebalanceImprovement: settings.settingsRiskMinRebalanceImprovement,
           });

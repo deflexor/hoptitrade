@@ -116,6 +116,7 @@ data RiskParameters = RiskParameters
   , riskMaxOpenPositions :: Int
   , riskAutoModeEnabled :: Bool  -- auto-open only; manage always runs
   , riskTakeProfitPercent :: Scientific  -- close when unrealized >= this % of max profit
+  , riskKellyFraction :: Scientific  -- 0.5 = half-Kelly
   , riskRebalanceEnabled :: Bool
   , riskMinRebalanceImprovement :: Scientific  -- e.g. 0.10 = 10%
   } deriving stock (Eq, Show, Generic)
@@ -141,6 +142,7 @@ defaultRiskParams = RiskParameters
   , riskMaxOpenPositions = 5
   , riskAutoModeEnabled = False
   , riskTakeProfitPercent = 50.0
+  , riskKellyFraction = 0.5
   , riskRebalanceEnabled = True
   , riskMinRebalanceImprovement = 0.10
   }

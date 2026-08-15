@@ -15,16 +15,16 @@ export function PositionsPage() {
     switch (activeTab) {
       case 'opening':
         return position.positionStatus === PositionStatus.PositionOpening;
-      case 'active':
+      case 'open':
         return position.positionStatus === PositionStatus.PositionActive;
       case 'partial':
         return position.positionStatus === PositionStatus.PositionPartial;
+      case 'closing':
+        return position.positionStatus === PositionStatus.PositionClosing;
+      case 'closed':
+        return position.positionStatus === PositionStatus.PositionClosed;
       default:
-        return [
-          PositionStatus.PositionOpening,
-          PositionStatus.PositionActive,
-          PositionStatus.PositionPartial,
-        ].includes(position.positionStatus);
+        return true;
     }
   });
 
@@ -73,8 +73,10 @@ export function PositionsPage() {
         <TabsList>
           <TabsTrigger value="all">All</TabsTrigger>
           <TabsTrigger value="opening">Opening</TabsTrigger>
-          <TabsTrigger value="active">Active</TabsTrigger>
+          <TabsTrigger value="open">Open</TabsTrigger>
           <TabsTrigger value="partial">Partial</TabsTrigger>
+          <TabsTrigger value="closing">Closing</TabsTrigger>
+          <TabsTrigger value="closed">Closed</TabsTrigger>
         </TabsList>
 
         <TabsContent value={activeTab} className="mt-6">

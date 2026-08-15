@@ -116,6 +116,7 @@ executable hoptitrade
         Domain.Broker
         Domain.Greeks
         Domain.Greeks.Calculator
+        Domain.Kelly
         Domain.Option
         Domain.Order
         Domain.Position
@@ -154,13 +155,11 @@ executable hoptitrade
 test-suite hoptitrade-test
     import:           warnings, extensions
     type:             exitcode-stdio-1.0
-    hs-source-dirs:   test
+    hs-source-dirs:   test, src
     main-is:          Spec.hs
+    other-modules:    Domain.Kelly
     build-depends:
         base >=4.18 && <5,
-        hoptitrade,
         hspec >=2.11,
-        hspec-discover >=2.11,
-        QuickCheck >=2.14,
-        quickcheck-instances >=0.3
+        scientific >=0.3
     default-language: GHC2021

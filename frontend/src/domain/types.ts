@@ -209,6 +209,7 @@ export interface RiskParameters {
   riskMaxOpenPositions: number;
   riskAutoModeEnabled: boolean;
   riskTakeProfitPercent: number;
+  riskKellyFraction: number;
   riskRebalanceEnabled: boolean;
   riskMinRebalanceImprovement: number;
 }
@@ -235,6 +236,7 @@ export interface SettingsResponse {
   settingsRiskMaxOpenPositions: number;
   settingsRiskAutoModeEnabled: boolean;
   settingsRiskTakeProfitPercent: number;
+  settingsRiskKellyFraction: number;
   settingsRiskRebalanceEnabled: boolean;
   settingsRiskMinRebalanceImprovement: number;
   settingsSelectedBroker: SelectedBroker;
@@ -258,6 +260,7 @@ export interface UpdateSettingsRequest {
   updateMaxOpenPositions: number;
   updateAutoModeEnabled: boolean;
   updateTakeProfitPercent?: number;
+  updateKellyFraction?: number;
   updateRebalanceEnabled?: boolean;
   updateMinRebalanceImprovement?: number;
 }
@@ -510,6 +513,7 @@ export interface OpenPositionRequest {
   oprMaxProfit: number | null;
   oprMaxLoss: number | null;
   oprEntryPremium: number | null;
+  oprEntryPop: number | null;
   oprMargin: number;
 }
 

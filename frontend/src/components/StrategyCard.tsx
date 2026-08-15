@@ -4,6 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { useSettings } from '@/api';
+import { kellyFraction, kellyQuantity } from '@/lib/utils';
 import { TrendingUp, TrendingDown, AlertCircle, Calendar, Target, DollarSign, ChevronDown, ChevronUp } from 'lucide-react';
 
 interface StrategyCardProps {
@@ -15,7 +17,24 @@ interface StrategyCardProps {
 
 export function StrategyCard({ strategy, onOpen, isOpening, forceShowDetails = false }: StrategyCardProps) {
   const { strategyAdvice, strategyMetrics, strategyGreeks, strategyNetPremium } = strategy;
+  const { data: settings } = useSettings();
   const [showDetails, setShowDetails] = useState(false);
+  const p = strategyMetrics.metricsProbabilityOfProfit;
+  const maxP = strategyMetrics.metricsMaxProfit;
+  const maxL = strategyMetrics.metricsMaxLoss;
+  const fStar =
+    p != null && maxP != null && maxL != null && maxL > 0 ? kellyFraction(p, maxP / maxL) : 0;
+  const suggestedQty =
+    p != null && maxP != null && maxL != null
+      ? kellyQuantity(
+          p,
+          maxP,
+          maxL,
+          settings?.settingsRiskKellyFraction ?? 0.5,
+          settings?.settingsRiskMaxPositionSize ?? 1000,
+          settings?.settingsRiskMaxLossPercent ?? 2,
+        )
+      : 0;
 
   // Sync with global toggle
   useEffect(() => {
@@ -90,6 +109,9 @@ export function StrategyCard({ strategy, onOpen, isOpening, forceShowDetails = f
             <CardDescription>{strategy.strategyUnderlying}</CardDescription>
           </div>
           <div className="flex flex-col items-end gap-1">
+            {strategy.strategyStatus === 'StrategyAvailable' && (
+              <Badge variant="default">New</Badge>
+            )}
             <Badge variant={strategyAdvice.adviceShouldOpen ? 'default' : 'secondary'}>
               {strategyAdvice.adviceShouldOpen ? 'Recommended' : 'Neutral'}
             </Badge>
@@ -98,6 +120,9 @@ export function StrategyCard({ strategy, onOpen, isOpening, forceShowDetails = f
                 PoP: {formatPercent(strategyMetrics.metricsProbabilityOfProfit)}
               </span>
             )}
+            <span className="text-xs text-muted-foreground">
+              f* {formatPercent(fStar)} · qty {suggestedQty}
+            </span>
           </div>
         </div>
       </CardHeader>

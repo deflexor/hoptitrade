@@ -8,10 +8,12 @@ module API.Positions
   ) where
 
 import App.PositionOrchestrator
-  ( OpenLegSpec (..)
+  ( OpenLegSpec
   , OpenPositionSpec (..)
   , closePositionOnExchange
+  , mkOpenLeg
   , openMultiLegPosition
+  , sizeLegs
   )
 import Data.Aeson (FromJSON, ToJSON)
 import Data.Maybe (mapMaybe)
@@ -94,6 +96,7 @@ data OpenPositionRequest = OpenPositionRequest
   , oprMaxProfit :: Maybe Scientific
   , oprMaxLoss :: Maybe Scientific
   , oprEntryPremium :: Maybe Scientific
+  , oprEntryPop :: Maybe Scientific
   , oprMargin :: Scientific
   } deriving stock (Eq, Show, Generic)
   deriving anyclass (FromJSON, ToJSON)
@@ -166,37 +169,38 @@ positionsServer pool =
               Nothing -> pure $ OpenPositionResponse False Nothing (Just "No active broker configured")
               Just config -> do
                 let legs = mapMaybe parseLeg (oprLegs req)
-                    spec = OpenPositionSpec
+                    raw = OpenPositionSpec
                       { opsStrategyId = oprStrategyId req
                       , opsUnderlying = oprUnderlying req
                       , opsLegs = legs
                       , opsMaxProfit = oprMaxProfit req
                       , opsMaxLoss = oprMaxLoss req
                       , opsEntryPremium = oprEntryPremium req
+                      , opsEntryPop = oprEntryPop req
                       , opsMargin = oprMargin req
                       }
                 if length legs /= length (oprLegs req)
                   then pure $ OpenPositionResponse False Nothing (Just "Invalid leg side")
-                  else do
-                    result <- embed $ openMultiLegPosition pool config uid spec
-                    case result of
-                      Left err -> pure $ OpenPositionResponse False Nothing (Just err)
-                      Right pos -> pure $ OpenPositionResponse True (Just $ toPositionResponse pos) Nothing
+                  else case (oprEntryPop req, oprMaxProfit req, oprMaxLoss req) of
+                    (Just p, Just maxP, Just maxL) ->
+                      case sizeLegs risk p maxP maxL raw of
+                        Nothing -> pure $ OpenPositionResponse False Nothing (Just "Kelly size is 0")
+                        Just spec -> do
+                          result <- embed $ openMultiLegPosition pool config uid spec
+                          case result of
+                            Left err -> pure $ OpenPositionResponse False Nothing (Just err)
+                            Right pos -> pure $ OpenPositionResponse True (Just $ toPositionResponse pos) Nothing
+                    _ -> pure $ OpenPositionResponse False Nothing (Just "Missing entry PoP, max profit, or max loss")
 
 parseLeg :: OpenLegRequest -> Maybe OpenLegSpec
 parseLeg OpenLegRequest{..} = do
-  side <- case olrSide of
+  s <- case olrSide of
     "buy"  -> Just Buy
     "Buy"  -> Just Buy
     "sell" -> Just Sell
     "Sell" -> Just Sell
     _      -> Nothing
-  pure OpenLegSpec
-    { olsInstrumentId = InstrumentId olrInstrumentId
-    , olsSide = side
-    , olsQuantity = olrQuantity
-    , olsLimitPrice = olrLimitPrice
-    }
+  pure $ mkOpenLeg (InstrumentId olrInstrumentId) s olrQuantity olrLimitPrice
 
 toPositionResponse :: Position -> PositionResponse
 toPositionResponse pos = PositionResponse

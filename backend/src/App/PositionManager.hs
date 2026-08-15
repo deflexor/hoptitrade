@@ -7,22 +7,37 @@ module App.PositionManager
   , defaultManagerConfig
   ) where
 
-import App.PositionOrchestrator (closePositionOnExchange)
+import API.Strategies
+  ( StrategyLegInfo (..)
+  , StrategyResponse (..)
+  , defaultFilters
+  , fetchRealTimeStrategies
+  )
+import App.PositionOrchestrator
+  ( OpenPositionSpec (..)
+  , closePositionOnExchange
+  , mkOpenLeg
+  , openMultiLegPosition
+  , sizeLegs
+  )
 import Control.Concurrent (threadDelay, forkIO)
 import Control.Exception (SomeException, try)
 import Control.Monad (forever, when, forM_, void)
+import Data.List (maximumBy)
 import Data.Maybe (mapMaybe)
+import Data.Ord (comparing)
 import Data.Scientific (Scientific)
-import Data.Text (Text)
 import qualified Data.Text as Text
 import Database.Persist.Sql (ConnectionPool)
 import Domain.Broker (BrokerConfig (..))
-import Domain.Position (Position (..), PositionLeg (..), calculateUnrealizedPL)
+import Domain.Kelly (kellyEdgeGone, kellyFraction)
+import Domain.Position (Position (..), PositionLeg (..), calculateUnrealizedPL, isPositionActive)
 import Domain.Settings
   ( RiskParameters (..)
   , Settings (..)
   , settingsToBrokerConfig
   )
+import Domain.Strategy (StrategyMetrics (..))
 import Domain.Types (InstrumentId (..), UserId (..))
 import Effects.Auth (defaultUserId)
 import Effects.Position (entityToPosition)
@@ -71,19 +86,74 @@ runManagerTick pool encCtx ManagerConfig{..} = do
         updated = pos { positionUnrealizedPL = mUpl }
     DB.updatePosition pool updated
 
-    case (mUpl, positionMaxProfit pos, mConfig) of
-      (Just upl, Just maxProfit, Just config)
+    case (mUpl, positionMaxProfit pos, positionMaxLoss pos, positionEntryPop pos, mConfig) of
+      (Just upl, Just maxProfit, _, _, Just config)
         | maxProfit > 0
         , upl >= maxProfit * (riskTakeProfitPercent risk / 100) -> do
             putStrLn $ "PositionManager: take-profit hit for " ++ show (positionId pos)
+            void $ closePositionOnExchange pool config mcUserId updated
+      (Just upl, Just maxProfit, Just maxLoss, Just pop, Just config)
+        | kellyEdgeGone pop maxProfit maxLoss upl -> do
+            putStrLn $ "PositionManager: Kelly f*<=0 for " ++ show (positionId pos)
             void $ closePositionOnExchange pool config mcUserId updated
       _ -> pure ()
 
     when (riskRebalanceEnabled risk) $
       evaluateRebalance risk updated
 
-  when (riskAutoModeEnabled risk) $
-    putStrLn "PositionManager: auto-open enabled"
+  case (riskAutoModeEnabled risk, mConfig) of
+    (True, Just config)
+      | length (filter (isPositionActive . positionStatus) positions) < riskMaxOpenPositions risk ->
+          tryAutoOpen pool config mcUserId risk positions
+    _ -> pure ()
+
+tryAutoOpen
+  :: ConnectionPool
+  -> BrokerConfig
+  -> UserId
+  -> RiskParameters
+  -> [Position]
+  -> IO ()
+tryAutoOpen pool config uid risk openPos = do
+  result <- fetchRealTimeStrategies defaultFilters
+  case result of
+    Left err -> putStrLn $ "PositionManager: scan failed: " ++ err
+    Right strategies ->
+      case pickBest strategies of
+        Nothing -> pure ()
+        Just spec -> do
+          eres <- openMultiLegPosition pool config uid spec
+          case eres of
+            Left err -> putStrLn $ "PositionManager: auto-open failed: " ++ Text.unpack err
+            Right pos -> putStrLn $ "PositionManager: auto-opened " ++ show (positionId pos)
+  where
+    occupied = [posLegInstrumentId l | p <- openPos, l <- positionLegs p]
+    pickBest ss =
+      let scored = mapMaybe (scoreOccupied occupied risk) ss
+      in if null scored then Nothing else Just (snd $ maximumBy (comparing fst) scored)
+
+scoreOccupied :: [InstrumentId] -> RiskParameters -> StrategyResponse -> Maybe (Scientific, OpenPositionSpec)
+scoreOccupied occupied risk s = do
+  let m = strategyMetrics s
+  p <- metricsProbabilityOfProfit m
+  maxP <- metricsMaxProfit m
+  maxL <- metricsMaxLoss m
+  let insts = map sliInstrumentId (strategyOpenLegs s)
+      f = kellyFraction p (if maxL > 0 then maxP / maxL else 0)
+      legs = map (\StrategyLegInfo{..} -> mkOpenLeg sliInstrumentId sliSide sliQuantity sliLimitPrice) (strategyOpenLegs s)
+  spec <- sizeLegs risk p maxP maxL OpenPositionSpec
+    { opsStrategyId = strategyId s
+    , opsUnderlying = strategyUnderlying s
+    , opsLegs = legs
+    , opsMaxProfit = Just maxP
+    , opsMaxLoss = Just maxL
+    , opsEntryPremium = Just (strategyNetPremium s)
+    , opsEntryPop = Just p
+    , opsMargin = strategyMarginRequired s
+    }
+  if f > 0 && not (null legs) && not (any (`elem` occupied) insts)
+    then Just (f, spec)
+    else Nothing
 
 fetchMarks :: Maybe BrokerConfig -> [InstrumentId] -> IO [(InstrumentId, Scientific)]
 fetchMarks (Just config@BybitConfig{}) insts = do

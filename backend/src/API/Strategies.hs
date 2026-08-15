@@ -7,8 +7,10 @@ module API.Strategies
   , strategiesServer
   , StrategyResponse (..)
   , StrategyFilters (..)
+  , StrategyLegInfo (..)
   , RiskLevel (..)
   , defaultFilters
+  , fetchRealTimeStrategies
   ) where
 
 import Control.Monad (forM, forM_)
@@ -32,7 +34,7 @@ import Domain.Strategy
   , StrategyStatus (..)
   , StrategyType (..)
   )
-import Domain.Types (StrategyId (..), TradingMode (..), InstrumentId (..))
+import Domain.Types (StrategyId (..), TradingMode (..), InstrumentId (..), Side (..))
 import GHC.Generics (Generic)
 import Infrastructure.OKX.Client
   ( OKXClientConfig
@@ -117,8 +119,8 @@ data StrategyResponse = StrategyResponse
     deriving anyclass FromJSON
 
 data StrategyLegInfo = StrategyLegInfo
-  { sliInstrumentId :: Text
-  , sliSide :: Text
+  { sliInstrumentId :: InstrumentId
+  , sliSide :: Side
   , sliQuantity :: Scientific
   , sliLimitPrice :: Maybe Scientific
   } deriving stock (Eq, Show, Generic)
@@ -514,20 +516,18 @@ generateIronCondors now spotPrice filters calls puts =
         , strategyNetPremium = netPremium
         , strategyMarginRequired = fromFloatDigits maxLoss
         , strategyAdvice = AIAdvice True "High probability of profit with defined risk" 0.85
-        , strategyStatus = StrategyActive
+        , strategyStatus = StrategyAvailable
         , strategyQualityScore = 0  -- Will be calculated
         , strategyRiskRank = 0      -- Will be assigned
         , strategyExpiration = Just (contractExpiration shortCall)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration shortCall))
         , strategyOpenLegs =
-            [ StrategyLegInfo (unInst shortPut) "Sell" 1 (contractBid shortPut)
-            , StrategyLegInfo (unInst longPut) "Buy" 1 (contractAsk longPut)
-            , StrategyLegInfo (unInst shortCall) "Sell" 1 (contractBid shortCall)
-            , StrategyLegInfo (unInst longCall) "Buy" 1 (contractAsk longCall)
+            [ StrategyLegInfo (contractInstrumentId shortPut) Sell 1 (contractBid shortPut)
+            , StrategyLegInfo (contractInstrumentId longPut) Buy 1 (contractAsk longPut)
+            , StrategyLegInfo (contractInstrumentId shortCall) Sell 1 (contractBid shortCall)
+            , StrategyLegInfo (contractInstrumentId longCall) Buy 1 (contractAsk longCall)
             ]
         }
-      where
-        unInst c = let InstrumentId i = contractInstrumentId c in i
 
 generateSpreads :: UTCTime -> Scientific -> StrategyFilters -> [OptionContract] -> [OptionContract] -> [StrategyResponse]
 generateSpreads now spotPrice filters calls puts = 
@@ -569,14 +569,14 @@ generateBullCallSpreads now spotPrice filters calls =
         , strategyNetPremium = -cost
         , strategyMarginRequired = cost
         , strategyAdvice = AIAdvice True "Moderate directional play with limited risk" 0.65
-        , strategyStatus = StrategyActive
+        , strategyStatus = StrategyAvailable
         , strategyQualityScore = 0
         , strategyRiskRank = 0
         , strategyExpiration = Just (contractExpiration long)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
         , strategyOpenLegs =
-            [ StrategyLegInfo (let InstrumentId i = contractInstrumentId long in i) "Buy" 1 (contractAsk long)
-            , StrategyLegInfo (let InstrumentId i = contractInstrumentId short in i) "Sell" 1 (contractBid short)
+            [ StrategyLegInfo (contractInstrumentId long) Buy 1 (contractAsk long)
+            , StrategyLegInfo (contractInstrumentId short) Sell 1 (contractBid short)
             ]
         }
 generateBearPutSpreads now spotPrice filters puts = 
@@ -612,14 +612,14 @@ generateBearPutSpreads now spotPrice filters puts =
         , strategyNetPremium = credit
         , strategyMarginRequired = fromFloatDigits maxLoss
         , strategyAdvice = AIAdvice True "Bearish strategy with income potential" 0.60
-        , strategyStatus = StrategyActive
+        , strategyStatus = StrategyAvailable
         , strategyQualityScore = 0
         , strategyRiskRank = 0
         , strategyExpiration = Just (contractExpiration long)
         , strategyDaysToExpiry = Just (calculateDays now (contractExpiration long))
         , strategyOpenLegs =
-            [ StrategyLegInfo (let InstrumentId i = contractInstrumentId short in i) "Sell" 1 (contractBid short)
-            , StrategyLegInfo (let InstrumentId i = contractInstrumentId long in i) "Buy" 1 (contractAsk long)
+            [ StrategyLegInfo (contractInstrumentId short) Sell 1 (contractBid short)
+            , StrategyLegInfo (contractInstrumentId long) Buy 1 (contractAsk long)
             ]
         }
 
@@ -652,14 +652,14 @@ generateStraddles now spotPrice filters (Just atmCall) (Just atmPut) =
       , strategyNetPremium = -cost
       , strategyMarginRequired = cost
       , strategyAdvice = AIAdvice False "High risk play - requires large volatility expansion" 0.35
-      , strategyStatus = StrategyActive
+      , strategyStatus = StrategyAvailable
       , strategyQualityScore = 0
       , strategyRiskRank = 0
       , strategyExpiration = Just (contractExpiration atmCall)
       , strategyDaysToExpiry = Just (calculateDays now (contractExpiration atmCall))
       , strategyOpenLegs =
-          [ StrategyLegInfo (let InstrumentId i = contractInstrumentId atmCall in i) "Buy" 1 (contractAsk atmCall)
-          , StrategyLegInfo (let InstrumentId i = contractInstrumentId atmPut in i) "Buy" 1 (contractAsk atmPut)
+          [ StrategyLegInfo (contractInstrumentId atmCall) Buy 1 (contractAsk atmCall)
+          , StrategyLegInfo (contractInstrumentId atmPut) Buy 1 (contractAsk atmPut)
           ]
       }]
 generateStraddles _ _ _ _ _ = []
@@ -735,7 +735,7 @@ mockIronCondor now idx = StrategyResponse
   , strategyNetPremium = 450.0
   , strategyMarginRequired = 5000.0
   , strategyAdvice = AIAdvice True "High probability of profit with defined risk" 0.85
-  , strategyStatus = StrategyActive
+  , strategyStatus = StrategyAvailable
   , strategyQualityScore = 75.0
   , strategyRiskRank = 1
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
@@ -769,7 +769,7 @@ mockBullCallSpread now idx = StrategyResponse
   , strategyNetPremium = -220.0
   , strategyMarginRequired = 500.0
   , strategyAdvice = AIAdvice True "Moderate risk with good profit potential" 0.65
-  , strategyStatus = StrategyActive
+  , strategyStatus = StrategyAvailable
   , strategyQualityScore = 65.0
   , strategyRiskRank = 2
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
@@ -803,7 +803,7 @@ mockBearPutSpread now idx = StrategyResponse
   , strategyNetPremium = -200.0
   , strategyMarginRequired = 2000.0
   , strategyAdvice = AIAdvice False "High risk/reward ratio requires careful monitoring" 0.45
-  , strategyStatus = StrategyActive
+  , strategyStatus = StrategyAvailable
   , strategyQualityScore = 55.0
   , strategyRiskRank = 3
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))
@@ -837,7 +837,7 @@ mockStraddle now idx = StrategyResponse
   , strategyNetPremium = -1200.0
   , strategyMarginRequired = 1200.0
   , strategyAdvice = AIAdvice False "High risk play dependent on volatility expansion" 0.35
-  , strategyStatus = StrategyActive
+  , strategyStatus = StrategyAvailable
   , strategyQualityScore = 40.0
   , strategyRiskRank = 4
   , strategyExpiration = Just (Expiration (addUTCTime (24 * 3600 * 30) now))

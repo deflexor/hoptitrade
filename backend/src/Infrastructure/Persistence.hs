@@ -38,6 +38,8 @@ module Infrastructure.Persistence
   , getPositionById
   , getPositionLegs
   , savePosition
+  , insertPositionLegs
+  , trackPositionInstruments
   , updatePosition
   , deletePosition
   , hasPositionForInstrument
@@ -96,6 +98,7 @@ UserSettings
     maxOpenPositions Int default=5
     autoModeEnabled Bool default=False
     takeProfitPercent Double default=50.0
+    kellyFraction Double default=0.5
     rebalanceEnabled Bool default=True
     minRebalanceImprovement Double default=0.10
     UniqueUserSettings userId
@@ -153,6 +156,7 @@ PositionEntity
     maxProfit Double Maybe
     maxLoss Double Maybe
     entryPremium Double Maybe
+    entryPop Double Maybe
     openedAt UTCTime Maybe
     closedAt UTCTime Maybe
     notes Text Maybe
@@ -230,6 +234,7 @@ saveUserSettings pool (UserId uid) broker useSandbox RiskParameters{..} = withDa
         , UserSettingsMaxOpenPositions =. riskMaxOpenPositions
         , UserSettingsAutoModeEnabled =. riskAutoModeEnabled
         , UserSettingsTakeProfitPercent =. realToFrac riskTakeProfitPercent
+        , UserSettingsKellyFraction =. realToFrac riskKellyFraction
         , UserSettingsRebalanceEnabled =. riskRebalanceEnabled
         , UserSettingsMinRebalanceImprovement =. realToFrac riskMinRebalanceImprovement
         ]
@@ -244,6 +249,7 @@ saveUserSettings pool (UserId uid) broker useSandbox RiskParameters{..} = withDa
         , userSettingsMaxOpenPositions = riskMaxOpenPositions
         , userSettingsAutoModeEnabled = riskAutoModeEnabled
         , userSettingsTakeProfitPercent = realToFrac riskTakeProfitPercent
+        , userSettingsKellyFraction = realToFrac riskKellyFraction
         , userSettingsRebalanceEnabled = riskRebalanceEnabled
         , userSettingsMinRebalanceImprovement = realToFrac riskMinRebalanceImprovement
         }
@@ -550,6 +556,7 @@ savePosition pool (UserId uid) Position{..} = withDatabase pool $ do
     , positionEntityMaxProfit = realToFrac <$> positionMaxProfit
     , positionEntityMaxLoss = realToFrac <$> positionMaxLoss
     , positionEntityEntryPremium = realToFrac <$> positionEntryPremium
+    , positionEntityEntryPop = realToFrac <$> positionEntryPop
     , positionEntityOpenedAt = positionOpenedAt
     , positionEntityClosedAt = positionClosedAt
     , positionEntityNotes = positionNotes
@@ -574,30 +581,49 @@ savePosition pool (UserId uid) Position{..} = withDatabase pool $ do
     
     isActiveStatus s = s `elem` [PositionOpening, PositionActive, PositionPartial 0]
     
-    insertLeg pid PositionLeg{..} = insert_ $ PositionLegEntity
-      { positionLegEntityPositionId = pid
-      , positionLegEntityOrderId = Text.pack $ show posLegOrderId
-      , positionLegEntityInstrumentId = let InstrumentId i = posLegInstrumentId in i
-      , positionLegEntitySide = case posLegSide of Buy -> "buy"; Sell -> "sell"
-      , positionLegEntityQuantity = realToFrac posLegQuantity
-      , positionLegEntityFilledPrice = realToFrac posLegFilledPrice
-      , positionLegEntityFilledAt = posLegFilledAt
-      }
+    insertLeg = insertLegRow
     
     getInstrumentIdsFromLegs = map (\(PositionLeg{posLegInstrumentId = InstrumentId i}) -> i)
-    
-    trackActiveInstrument userId time posId instId = do
-      mExisting <- getBy $ UniqueActiveInstrument userId instId
-      case mExisting of
-        Just _ -> return ()
-        Nothing -> do
-          _ <- insert $ ActiveInstrument
-            { activeInstrumentUserId = userId
-            , activeInstrumentInstrumentId = instId
-            , activeInstrumentPositionId = posId
-            , activeInstrumentOpenedAt = time
-            }
-          return ()
+
+insertLegRow :: MonadIO m => Text -> PositionLeg -> SqlPersistT m ()
+insertLegRow pid PositionLeg{..} = insert_ $ PositionLegEntity
+  { positionLegEntityPositionId = pid
+  , positionLegEntityOrderId = Text.pack $ show posLegOrderId
+  , positionLegEntityInstrumentId = let InstrumentId i = posLegInstrumentId in i
+  , positionLegEntitySide = case posLegSide of Buy -> "buy"; Sell -> "sell"
+  , positionLegEntityQuantity = realToFrac posLegQuantity
+  , positionLegEntityFilledPrice = realToFrac posLegFilledPrice
+  , positionLegEntityFilledAt = posLegFilledAt
+  }
+
+trackActiveInstrument :: MonadIO m => Text -> UTCTime -> Text -> Text -> SqlPersistT m ()
+trackActiveInstrument userId time posId instId = do
+  mExisting <- getBy $ UniqueActiveInstrument userId instId
+  case mExisting of
+    Just _ -> return ()
+    Nothing -> insert_ $ ActiveInstrument
+      { activeInstrumentUserId = userId
+      , activeInstrumentInstrumentId = instId
+      , activeInstrumentPositionId = posId
+      , activeInstrumentOpenedAt = time
+      }
+
+trackPositionInstruments :: MonadIO m => ConnectionPool -> UserId -> PositionId -> [InstrumentId] -> m ()
+trackPositionInstruments pool (UserId uid) pid insts = withDatabase pool $ do
+  now <- liftIO getCurrentTime
+  let uidText = Text.pack $ show uid
+      pidText = Text.pack $ show pid
+  mapM_ (\(InstrumentId i) -> trackActiveInstrument uidText now pidText i) insts
+
+-- | Attach filled legs after Opening and occupy instruments for dupe checks.
+insertPositionLegs :: MonadIO m => ConnectionPool -> UserId -> Position -> m ()
+insertPositionLegs pool (UserId uid) Position{..} = withDatabase pool $ do
+  let pidText = Text.pack $ show positionId
+      uidText = Text.pack $ show uid
+  now <- liftIO getCurrentTime
+  mapM_ (insertLegRow pidText) positionLegs
+  let instrumentIds = map (\(PositionLeg{posLegInstrumentId = InstrumentId i}) -> i) positionLegs
+  mapM_ (trackActiveInstrument uidText now pidText) instrumentIds
 
 -- | Update an existing position
 updatePosition :: MonadIO m => ConnectionPool -> Position -> m ()
@@ -613,6 +639,7 @@ updatePosition pool Position{..} = withDatabase pool $ do
         , PositionEntityMaxProfit =. realToFrac <$> positionMaxProfit
         , PositionEntityMaxLoss =. realToFrac <$> positionMaxLoss
         , PositionEntityEntryPremium =. realToFrac <$> positionEntryPremium
+        , PositionEntityEntryPop =. realToFrac <$> positionEntryPop
         , PositionEntityOpenedAt =. positionOpenedAt
         , PositionEntityClosedAt =. positionClosedAt
         , PositionEntityNotes =. positionNotes

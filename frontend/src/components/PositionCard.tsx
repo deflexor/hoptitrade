@@ -25,7 +25,7 @@ export function PositionCard({ position, onClose, isClosing }: PositionCardProps
       case PositionStatus.PositionOpening:
         return <Badge variant="warning">Opening</Badge>;
       case PositionStatus.PositionActive:
-        return <Badge variant="success">Active</Badge>;
+        return <Badge variant="success">Open</Badge>;
       case PositionStatus.PositionPartial:
         return <Badge variant="warning">Partial</Badge>;
       case PositionStatus.PositionClosing:

@@ -48,6 +48,7 @@ data Position = Position
   , positionMaxProfit :: Maybe Scientific
   , positionMaxLoss :: Maybe Scientific
   , positionEntryPremium :: Maybe Scientific
+  , positionEntryPop :: Maybe Scientific
   , positionOpenedAt :: Maybe UTCTime
   , positionClosedAt :: Maybe UTCTime
   , positionNotes :: Maybe Text
@@ -77,6 +78,7 @@ calculateUnrealizedPL position marks =
   in fmap sum $ traverse legPL (positionLegs position)
 
 isPositionActive :: PositionStatus -> Bool
+isPositionActive PositionOpening = True
 isPositionActive PositionActive = True
 isPositionActive (PositionPartial _) = True
 isPositionActive _ = False

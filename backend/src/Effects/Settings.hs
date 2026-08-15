@@ -77,6 +77,7 @@ riskFromEntity settings = RiskParameters
   , riskMaxOpenPositions = userSettingsMaxOpenPositions settings
   , riskAutoModeEnabled = userSettingsAutoModeEnabled settings
   , riskTakeProfitPercent = fromRational $ toRational $ userSettingsTakeProfitPercent settings
+  , riskKellyFraction = fromRational $ toRational $ userSettingsKellyFraction settings
   , riskRebalanceEnabled = userSettingsRebalanceEnabled settings
   , riskMinRebalanceImprovement = fromRational $ toRational $ userSettingsMinRebalanceImprovement settings
   }

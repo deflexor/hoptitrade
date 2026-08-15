@@ -6,6 +6,8 @@ module App.PositionOrchestrator
   , OpenPositionSpec (..)
   , openMultiLegPosition
   , closePositionOnExchange
+  , sizeLegs
+  , mkOpenLeg
   ) where
 
 import Data.Maybe (fromMaybe)
@@ -15,11 +17,12 @@ import qualified Data.Text as Text
 import Data.Time (getCurrentTime)
 import Data.UUID.V4 (nextRandom)
 import Domain.Broker (BrokerConfig (..))
+import Domain.Kelly (kellyQuantity)
 import Domain.Order (OrderRequest (..), OrderResponse (..), OrderType (..))
 import Domain.Position (Position (..), PositionLeg (..))
+import Domain.Settings (RiskParameters (..))
 import Domain.Types
   ( InstrumentId (..)
-  , OrderId (..)
   , OrderStatus (..)
   , PositionId (..)
   , PositionStatus (..)
@@ -27,7 +30,6 @@ import Domain.Types
   , StrategyId (..)
   , UserId (..)
   )
-import qualified Effects.Broker as Broker
 import qualified Infrastructure.Broker.Bybit as Bybit
 import qualified Infrastructure.Persistence as DB
 import Database.Persist.Sql (ConnectionPool)
@@ -46,8 +48,26 @@ data OpenPositionSpec = OpenPositionSpec
   , opsMaxProfit :: Maybe Scientific
   , opsMaxLoss :: Maybe Scientific
   , opsEntryPremium :: Maybe Scientific
+  , opsEntryPop :: Maybe Scientific
   , opsMargin :: Scientific
   } deriving stock (Eq, Show)
+
+mkOpenLeg :: InstrumentId -> Side -> Scientific -> Maybe Scientific -> OpenLegSpec
+mkOpenLeg = OpenLegSpec
+
+-- | Scale every leg (and P/L / margin) by Kelly qty. Nothing if qty < 1.
+sizeLegs :: RiskParameters -> Scientific -> Scientific -> Scientific -> OpenPositionSpec -> Maybe OpenPositionSpec
+sizeLegs RiskParameters{..} p maxP maxL spec@OpenPositionSpec{..} =
+  let q = kellyQuantity p maxP maxL riskKellyFraction riskMaxPositionSize riskMaxLossPercent
+  in if q < 1 then Nothing
+     else let n = fromInteger q
+          in Just spec
+               { opsLegs = [l { olsQuantity = olsQuantity l * n } | l <- opsLegs]
+               , opsMaxProfit = Just (maxP * n)
+               , opsMaxLoss = Just (maxL * n)
+               , opsEntryPremium = (* n) <$> opsEntryPremium
+               , opsMargin = opsMargin * n
+               }
 
 -- | Place all legs via broker and persist the position.
 openMultiLegPosition
@@ -57,7 +77,6 @@ openMultiLegPosition
   -> OpenPositionSpec
   -> IO (Either Text Position)
 openMultiLegPosition pool config uid OpenPositionSpec{..} = do
-  -- Duplicate check
   let instIds = map olsInstrumentId opsLegs
   dupes <- mapM (\(InstrumentId i) -> DB.hasPositionForInstrument pool uid i) instIds
   if or dupes
@@ -66,30 +85,39 @@ openMultiLegPosition pool config uid OpenPositionSpec{..} = do
       now <- getCurrentTime
       pid <- nextRandom
       let positionId = PositionId pid
-
-      -- Place orders sequentially
+          opening = Position
+            { positionId = positionId
+            , positionStrategyId = opsStrategyId
+            , positionStatus = PositionOpening
+            , positionLegs = []
+            , positionGreeks = Nothing
+            , positionRealizedPL = Nothing
+            , positionUnrealizedPL = Just 0
+            , positionMarginUsed = opsMargin
+            , positionMaxProfit = opsMaxProfit
+            , positionMaxLoss = opsMaxLoss
+            , positionEntryPremium = opsEntryPremium
+            , positionEntryPop = opsEntryPop
+            , positionOpenedAt = Just now
+            , positionClosedAt = Nothing
+            , positionNotes = Just $ "Opened on " <> opsUnderlying
+            }
+      _ <- DB.savePosition pool uid opening
+      DB.trackPositionInstruments pool uid positionId instIds
+      -- ponytail: leftover fills on hard fail; add unwind if orphans show up
       results <- mapM (placeLeg config positionId) opsLegs
       case sequence results of
-        Left err -> pure $ Left err
+        Left err -> do
+          DB.updatePosition pool opening { positionStatus = PositionCancelled }
+          pure $ Left err
         Right filledLegs -> do
-          let position = Position
-                { positionId = positionId
-                , positionStrategyId = opsStrategyId
-                , positionStatus = PositionActive
+          let active = opening
+                { positionStatus = PositionActive
                 , positionLegs = filledLegs
-                , positionGreeks = Nothing
-                , positionRealizedPL = Nothing
-                , positionUnrealizedPL = Just 0
-                , positionMarginUsed = opsMargin
-                , positionMaxProfit = opsMaxProfit
-                , positionMaxLoss = opsMaxLoss
-                , positionEntryPremium = opsEntryPremium
-                , positionOpenedAt = Just now
-                , positionClosedAt = Nothing
-                , positionNotes = Just $ "Opened on " <> opsUnderlying
                 }
-          _ <- DB.savePosition pool uid position
-          pure $ Right position
+          DB.insertPositionLegs pool uid active
+          DB.updatePosition pool active
+          pure $ Right active
 
 placeLeg :: BrokerConfig -> PositionId -> OpenLegSpec -> IO (Either Text PositionLeg)
 placeLeg config pid OpenLegSpec{..} = do
@@ -133,19 +161,19 @@ closePositionOnExchange
   -> Position
   -> IO (Either Text Position)
 closePositionOnExchange pool config _uid pos = do
+  let closing = pos { positionStatus = PositionClosing }
+  DB.updatePosition pool closing
   results <- mapM (closeLeg config (positionId pos)) (positionLegs pos)
   case sequence results of
     Left err -> pure $ Left err
     Right _ -> do
       now <- getCurrentTime
-      let closed = pos
+      let closed = closing
             { positionStatus = PositionClosed
             , positionClosedAt = Just now
             , positionRealizedPL = positionUnrealizedPL pos
             }
       DB.updatePosition pool closed
-      -- Clear active instruments
-      let uidText = Text.pack $ show _uid  -- unused properly; cleanup via status
       pure $ Right closed
 
 closeLeg :: BrokerConfig -> PositionId -> PositionLeg -> IO (Either Text ())

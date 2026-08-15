@@ -35,6 +35,7 @@ export function OpportunitiesPage() {
         oprMaxProfit: strategy.strategyMetrics?.metricsMaxProfit ?? null,
         oprMaxLoss: strategy.strategyMetrics?.metricsMaxLoss ?? null,
         oprEntryPremium: strategy.strategyNetPremium ?? null,
+        oprEntryPop: strategy.strategyMetrics?.metricsProbabilityOfProfit ?? null,
         oprMargin: strategy.strategyMarginRequired ?? 0,
       });
       if (result.openSuccess) {

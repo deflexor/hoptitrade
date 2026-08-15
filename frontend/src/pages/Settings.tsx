@@ -46,6 +46,7 @@ export function SettingsPage() {
   const [maxOpenPositions, setMaxOpenPositions] = useState(5);
   const [autoModeEnabled, setAutoModeEnabled] = useState(false);
   const [takeProfitPercent, setTakeProfitPercent] = useState(50);
+  const [kellyFraction, setKellyFraction] = useState(0.5);
   const [rebalanceEnabled, setRebalanceEnabled] = useState(true);
 
   // Broker Selection
@@ -80,6 +81,7 @@ export function SettingsPage() {
       setMaxOpenPositions(settings.settingsRiskMaxOpenPositions || 5);
       setAutoModeEnabled(settings.settingsRiskAutoModeEnabled || false);
       setTakeProfitPercent(settings.settingsRiskTakeProfitPercent || 50);
+      setKellyFraction(settings.settingsRiskKellyFraction ?? 0.5);
       setRebalanceEnabled(settings.settingsRiskRebalanceEnabled ?? true);
       setSelectedBroker(settings.settingsSelectedBroker || SelectedBroker.BrokerNone);
       setUseSandbox(settings.settingsUseSandbox ?? true);
@@ -109,6 +111,7 @@ export function SettingsPage() {
         updateMaxOpenPositions: maxOpenPositions,
         updateAutoModeEnabled: autoModeEnabled,
         updateTakeProfitPercent: takeProfitPercent,
+        updateKellyFraction: kellyFraction,
         updateRebalanceEnabled: rebalanceEnabled,
       });
       setStatusMessage({ type: 'success', message: 'Risk settings saved successfully!' });
@@ -740,7 +743,7 @@ export function SettingsPage() {
                 />
               </div>
               <div className="space-y-2">
-                <Label htmlFor="max-position">Max Position Size (USD)</Label>
+                <Label htmlFor="max-position">Kelly bankroll (USD)</Label>
                 <Input
                   id="max-position"
                   type="number"
@@ -762,6 +765,19 @@ export function SettingsPage() {
                 />
               </div>
               <Separator />
+              <div className="space-y-2">
+                <Label htmlFor="kelly-fraction">Kelly fraction ({kellyFraction.toFixed(2)})</Label>
+                <input
+                  id="kelly-fraction"
+                  type="range"
+                  min={0.1}
+                  max={1}
+                  step={0.05}
+                  value={kellyFraction}
+                  onChange={(e) => setKellyFraction(parseFloat(e.target.value))}
+                  className="w-full"
+                />
+              </div>
               <div className="space-y-2">
                 <Label htmlFor="take-profit">Take Profit (% of max profit)</Label>
                 <Input

@@ -61,6 +61,7 @@ data SettingsResponse = SettingsResponse
   , settingsRiskMaxOpenPositions :: Int
   , settingsRiskAutoModeEnabled :: Bool
   , settingsRiskTakeProfitPercent :: Scientific
+  , settingsRiskKellyFraction :: Scientific
   , settingsRiskRebalanceEnabled :: Bool
   , settingsRiskMinRebalanceImprovement :: Scientific
   , settingsSelectedBroker :: DS.SelectedBroker
@@ -81,6 +82,7 @@ data UpdateSettingsRequest = UpdateSettingsRequest
   , updateMaxOpenPositions :: Int
   , updateAutoModeEnabled :: Bool
   , updateTakeProfitPercent :: Maybe Scientific
+  , updateKellyFraction :: Maybe Scientific
   , updateRebalanceEnabled :: Maybe Bool
   , updateMinRebalanceImprovement :: Maybe Scientific
   } deriving stock (Eq, Show, Generic)
@@ -200,6 +202,7 @@ settingsServer =
                   , DS.riskMaxOpenPositions = updateMaxOpenPositions req
                   , DS.riskAutoModeEnabled = updateAutoModeEnabled req
                   , DS.riskTakeProfitPercent = fromMaybe (DS.riskTakeProfitPercent oldRisk) (updateTakeProfitPercent req)
+                  , DS.riskKellyFraction = fromMaybe (DS.riskKellyFraction oldRisk) (updateKellyFraction req)
                   , DS.riskRebalanceEnabled = fromMaybe (DS.riskRebalanceEnabled oldRisk) (updateRebalanceEnabled req)
                   , DS.riskMinRebalanceImprovement = fromMaybe (DS.riskMinRebalanceImprovement oldRisk) (updateMinRebalanceImprovement req)
                   }
@@ -365,6 +368,7 @@ settingsServer =
       , settingsRiskMaxOpenPositions = 0
       , settingsRiskAutoModeEnabled = False
       , settingsRiskTakeProfitPercent = 50
+      , settingsRiskKellyFraction = 0.5
       , settingsRiskRebalanceEnabled = True
       , settingsRiskMinRebalanceImprovement = 0.10
       , settingsSelectedBroker = DS.BrokerNone
@@ -385,6 +389,7 @@ settingsServer =
       , settingsRiskMaxOpenPositions = DS.riskMaxOpenPositions $ DS.settingsRiskParams settings
       , settingsRiskAutoModeEnabled = DS.riskAutoModeEnabled $ DS.settingsRiskParams settings
       , settingsRiskTakeProfitPercent = DS.riskTakeProfitPercent $ DS.settingsRiskParams settings
+      , settingsRiskKellyFraction = DS.riskKellyFraction $ DS.settingsRiskParams settings
       , settingsRiskRebalanceEnabled = DS.riskRebalanceEnabled $ DS.settingsRiskParams settings
       , settingsRiskMinRebalanceImprovement = DS.riskMinRebalanceImprovement $ DS.settingsRiskParams settings
       , settingsSelectedBroker = DS.bpSelectedBroker $ DS.settingsBrokerPreference settings
